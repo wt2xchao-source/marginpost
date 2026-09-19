@@ -18,6 +18,24 @@ MarginPost 是一个本地优先的 Markdown 工作区，用于审阅编码 Agen
 
 它面向每天使用 Markdown、但不希望通过 Git Diff 才能理解文件变化的用户。
 
+## 公开测试：欢迎反馈
+
+MarginPost V0.1 目前是测试版本，并非正式生产版本。现阶段只验证了 macOS 本地源码构建，暂不提供打包安装程序，Windows 和 Linux 仍未验证。
+
+测试时请优先使用非关键 Markdown 文件的副本，并为重要内容保留备份。我们尤其希望了解：
+
+- 外部修改是否被准确捕获；
+- 审阅、接受和拒绝修改是否清晰顺手；
+- 版本历史与恢复功能是否让人放心；
+- 是否出现崩溃、性能问题或难以理解的行为；
+- MarginPost 还缺少哪些真实工作流。
+
+[报告 Bug](https://github.com/wt2xchao-source/marginpost/issues/new?template=bug_report.yml)
+·
+[提出改进建议](https://github.com/wt2xchao-source/marginpost/issues/new?template=improvement.yml)
+·
+[参与讨论](https://github.com/wt2xchao-source/marginpost/discussions)
+
 ## 产品方向
 
 MarginPost 将以下能力整合在同一个工作区中：

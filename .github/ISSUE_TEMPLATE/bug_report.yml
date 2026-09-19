@@ -1,0 +1,82 @@
+name: Bug report / Bug 报告
+description: Report a reproducible problem in the MarginPost public preview.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing MarginPost V0.1.
+        Please do not include private files, secrets, personal data, or confidential document content.
+
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system / 操作系统
+      options:
+        - macOS
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit / 版本或提交
+      description: Include the commit SHA if you built MarginPost from source.
+      placeholder: "Example: a257c90"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened? / 发生了什么？
+      description: Describe the problem without including private document content.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps / 复现步骤
+      placeholder: |
+        1. Open...
+        2. Change...
+        3. Review...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior / 预期行为
+    validations:
+      required: true
+
+  - type: dropdown
+    id: data-safety
+    attributes:
+      label: Data safety impact / 数据安全影响
+      options:
+        - No data loss or file corruption
+        - Possible data loss or file corruption
+        - Confirmed data loss or file corruption
+        - Unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context / 补充信息
+      description: Add screenshots or sanitized logs when useful.
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation / 确认
+      options:
+        - label: I removed private, personal, and confidential information.
+          required: true

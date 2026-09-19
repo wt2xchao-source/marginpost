@@ -1,0 +1,58 @@
+name: Improvement idea / 改进建议
+description: Suggest a workflow, usability, or reliability improvement.
+title: "[Idea]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        MarginPost V0.1 is a public preview. Concrete workflows and examples are more useful than feature names alone.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve? / 你想解决什么问题？
+      description: Describe the real workflow and where it currently becomes difficult.
+    validations:
+      required: true
+
+  - type: textarea
+    id: current-workflow
+    attributes:
+      label: Current workflow / 当前工作方式
+      description: What tools and steps do you use today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: improvement
+    attributes:
+      label: Suggested improvement / 改进建议
+      description: Explain the smallest change that would make the workflow better.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: How often does this happen? / 出现频率
+      options:
+        - Every day
+        - Several times a week
+        - Several times a month
+        - Occasionally
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context / 补充信息
+      description: Add sanitized examples or screenshots when useful.
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation / 确认
+      options:
+        - label: I removed private, personal, and confidential information.
+          required: true

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and discussion / 问题与讨论
+    url: https://github.com/wt2xchao-source/marginpost/discussions
+    about: Ask questions, share workflows, and discuss early ideas.
+  - name: Security vulnerability / 安全漏洞
+    url: https://github.com/wt2xchao-source/marginpost/security/advisories/new
+    about: Report security issues privately. Do not open a public issue.

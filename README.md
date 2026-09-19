@@ -21,6 +21,27 @@ changes made by coding agents, scripts, and other external tools.
 It is designed for people who work with Markdown every day but do not want to
 read Git diffs to understand what changed.
 
+## Public Preview: Your Feedback Matters
+
+MarginPost V0.1 is a testing version, not a production-ready release. The
+current source build has been verified locally on macOS. Packaged installers
+are not yet available, and Windows and Linux remain unverified.
+
+Please test with copies of non-critical Markdown files and keep backups of
+important work. We especially want to know:
+
+- whether external changes are captured correctly;
+- whether reviewing, accepting, and rejecting changes feels clear;
+- whether version history and restoration feel trustworthy;
+- where crashes, performance problems, or confusing behavior appear;
+- which real workflows MarginPost still does not support.
+
+[Report a bug](https://github.com/wt2xchao-source/marginpost/issues/new?template=bug_report.yml)
+·
+[Suggest an improvement](https://github.com/wt2xchao-source/marginpost/issues/new?template=improvement.yml)
+·
+[Join the discussion](https://github.com/wt2xchao-source/marginpost/discussions)
+
 ## Product Direction
 
 The product combines:
