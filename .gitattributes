@@ -1,0 +1,11 @@
+# Keep private product strategy and local project governance out of public exports.
+/AGENTS.md export-ignore
+/CURRENT_TASK.md export-ignore
+/PROJECT_BRIEF.md export-ignore
+/PRODUCT_STRATEGY.md export-ignore
+/COMPETITIVE_RESEARCH.md export-ignore
+/ROADMAP.md export-ignore
+/ARCHITECTURE.md export-ignore
+/docs export-ignore
+/work export-ignore
+/.claude export-ignore

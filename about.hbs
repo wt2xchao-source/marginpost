@@ -1,0 +1,14 @@
+MARGINPOST RUST THIRD-PARTY SOFTWARE LICENSES
+================================================
+
+{{#each licenses}}
+LICENSE: {{name}} ({{id}})
+USED BY:
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}
+{{/each}}
+
+{{{text}}}
+
+------------------------------------------------
+{{/each}}
