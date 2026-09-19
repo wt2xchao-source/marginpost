@@ -12,8 +12,8 @@
   Review Markdown changes made by coding agents before they reach disk.
 </p>
 
-> V0.1 local release candidate. It has not been published or packaged for
-> general distribution.
+> V0.1 public preview. The source code is available for testing; packaged
+> releases are not yet provided.
 
 MarginPost is a local-first Markdown workspace for reviewing
 changes made by coding agents, scripts, and other external tools.
@@ -139,8 +139,8 @@ cargo check --locked --manifest-path src-tauri/Cargo.toml
 The frontend build must run before the Rust checks in a clean checkout because
 the Tauri configuration references `dist/`.
 
-The repository URL above takes effect at public publication; until then
-clone from your local copy.
+The repository can be cloned directly from GitHub. Signed installers and
+packaged releases are not yet available.
 
 ## License
 
@@ -168,8 +168,8 @@ owner. The Apache-2.0 license applies to the source code and does not grant
 permission to use the MarginPost name or logo except as required for reasonable
 and customary use in describing the project.
 
-## Public Release
+## Public Preview
 
-No public release has been made. The license is Apache-2.0 (see above).
-Repository governance, security policy, trademark and package-name clearance,
-and release artifacts must be confirmed before publishing.
+MarginPost is available as a V0.1 public preview under Apache-2.0. No signed
+installers or packaged releases are available yet. Use GitHub Issues for bugs
+and product feedback, and follow `SECURITY.md` for vulnerability reports.

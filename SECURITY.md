@@ -9,10 +9,10 @@ code on the default branch; no older version receives separate support.
 
 Do not disclose a vulnerability in a public issue, discussion, or pull request.
 
-Use GitHub private vulnerability reporting for the MarginPost repository once
-the public repository is available. If private reporting is unavailable, open
-a public issue requesting a private contact channel without including exploit
-details, affected file paths, logs, or user data.
+Use GitHub private vulnerability reporting for the MarginPost repository. If
+private reporting is unavailable, open a public issue requesting a private
+contact channel without including exploit details, affected file paths, logs,
+or user data.
 
 Include:
 

@@ -12,7 +12,7 @@
   在编码 Agent 对 Markdown 的修改写入磁盘前完成审阅。
 </p>
 
-> V0.1 本地候选版本，尚未公开发布，也未面向普通用户提供安装包。
+> V0.1 公开预览版。源代码现已开放测试，暂不提供打包版本。
 
 MarginPost 是一个本地优先的 Markdown 工作区，用于审阅编码 Agent、脚本和其他外部工具对文件所做的修改。
 
@@ -116,7 +116,7 @@ cargo check --locked --manifest-path src-tauri/Cargo.toml
 
 在全新检出的仓库中，必须先完成前端构建，再运行 Rust 检查，因为 Tauri 配置引用了 `dist/`。
 
-上述仓库地址将在项目公开发布后生效；在此之前，请使用本地副本。
+现在可以直接从 GitHub 克隆仓库。签名安装包和打包版本暂未提供。
 
 ## 开源协议
 
@@ -135,6 +135,6 @@ npm run licenses:generate
 
 MarginPost™ 和 MarginPost 标志是项目所有者尚未注册的商标。Apache-2.0 协议适用于源代码，但除合理、惯常地描述本项目外，并不授予使用 MarginPost 名称或标志的许可。
 
-## 公开发布
+## 公开预览
 
-项目尚未公开发布，当前开源协议为 Apache-2.0。公开前仍需确认仓库治理、安全政策、商标与包名核查以及发布产物。
+MarginPost 当前以 V0.1 公开预览版开放，并采用 Apache-2.0 协议。暂不提供签名安装包或打包版本。Bug 和产品反馈请提交至 GitHub Issues；安全漏洞请按照 `SECURITY.md` 报告。
