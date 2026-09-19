@@ -1,4 +1,12 @@
-# MarginPost
+<p align="center">
+  <img src="assets/brand/marginpost-mark.png" alt="MarginPost mark" width="96">
+</p>
+
+<h1 align="center">MarginPost</h1>
+
+<p align="center">
+  Review Markdown changes made by coding agents before they reach disk.
+</p>
 
 > V0.1 local release candidate. It has not been published or packaged for
 > general distribution.
@@ -21,6 +29,20 @@ The product combines:
 
 The core distinction is not simply displaying a diff. Changes are captured as
 reviewable work items and presented in document context.
+
+## Product Tour
+
+### Review external changes in context
+
+![MarginPost change review](assets/screenshots/change-review.jpg)
+
+### Keep editing in the same workspace
+
+![MarginPost Markdown editor](assets/screenshots/editor.jpg)
+
+### Recover earlier versions
+
+![MarginPost version history](assets/screenshots/history.jpg)
 
 ## V0.1 Scope
 
@@ -135,8 +157,15 @@ cargo install cargo-about --version 0.9.1 --locked --features cli
 npm run licenses:generate
 ```
 
+## Trademarks
+
+MarginPost™ and the MarginPost logo are unregistered trademarks of the project
+owner. The Apache-2.0 license applies to the source code and does not grant
+permission to use the MarginPost name or logo except as required for reasonable
+and customary use in describing the project.
+
 ## Public Release
 
 No public release has been made. The license is Apache-2.0 (see above).
-Repository governance, security policy, screenshots, and release
-artifacts must be confirmed before publishing.
+Repository governance, security policy, trademark and package-name clearance,
+and release artifacts must be confirmed before publishing.
