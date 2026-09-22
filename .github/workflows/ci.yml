@@ -43,7 +43,12 @@ jobs:
         run: npm ci
 
       - name: Audit npm dependencies
-        run: npm audit --audit-level=high
+        # Legacy quick audit endpoint returned transient HTTP 400
+        # "Invalid package tree" during npm registry endpoint retirement
+        # (CI run #5, 2026-09-19, same package-lock as green runs #6/#7).
+        # Retry once so a flaky registry response does not fail the whole job;
+        # real high/critical findings still fail both attempts.
+        run: npm audit --audit-level=high || npm audit --audit-level=high
 
       - name: Check frontend types
         run: npm run typecheck
