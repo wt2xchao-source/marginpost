@@ -5,7 +5,10 @@ use crate::commands::{
 use crate::core::PendingChangeSet;
 use crate::history::HistoryState;
 use crate::AttributionLedger;
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{
+    event::ModifyKind, event::RenameMode, Event, EventKind, RecommendedWatcher, RecursiveMode,
+    Watcher,
+};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -39,12 +42,15 @@ impl From<OpenedDocument> for Snapshot {
 pub struct ChangeSetSummary {
     pub(crate) id: String,
     pub(crate) relative_path: String,
+    pub(crate) previous_relative_path: Option<String>,
     pub(crate) change_type: String,
     pub(crate) base_version_id: String,
     pub(crate) base_hash: String,
     pub(crate) candidate_version_id: String,
     pub(crate) candidate_hash: String,
     pub(crate) status: String,
+    pub(crate) superseded_by: Option<String>,
+    pub(crate) superseded_change_set_ids: Vec<String>,
     pub(crate) source_type: String,
     pub(crate) source: Option<String>,
     pub(crate) agent: Option<String>,
@@ -60,6 +66,8 @@ struct ChangeSetRecord {
     candidate_content: String,
     base_encoding: String,
     candidate_encoding: String,
+    base_exists: bool,
+    candidate_exists: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -70,6 +78,8 @@ pub struct ChangeSetDetail {
     pub(crate) candidate_content: String,
     pub(crate) base_encoding: String,
     pub(crate) candidate_encoding: String,
+    pub(crate) base_exists: bool,
+    pub(crate) candidate_exists: bool,
 }
 
 #[derive(Default)]
@@ -110,6 +120,34 @@ impl ChangeMonitorState {
                 content: content.to_string(),
                 content_hash: content_hash.to_string(),
                 encoding,
+            },
+        );
+    }
+
+    pub fn confirm_internal_delete(&self, relative_path: &str) {
+        let mut inner = self.inner.lock().expect("change monitor state");
+        inner.internal_saves.remove(relative_path);
+        inner.baseline.remove(relative_path);
+    }
+
+    pub fn confirm_internal_rename(
+        &self,
+        previous_relative_path: &str,
+        relative_path: &str,
+        content: &str,
+        content_hash: &str,
+        encoding: &str,
+    ) {
+        let mut inner = self.inner.lock().expect("change monitor state");
+        inner.internal_saves.remove(previous_relative_path);
+        inner.internal_saves.remove(relative_path);
+        inner.baseline.remove(previous_relative_path);
+        inner.baseline.insert(
+            relative_path.to_string(),
+            Snapshot {
+                content: content.to_string(),
+                content_hash: content_hash.to_string(),
+                encoding: encoding.to_string(),
             },
         );
     }
@@ -159,16 +197,15 @@ impl ChangeMonitorState {
                 summary: ChangeSetSummary {
                     id: change.id,
                     relative_path: change.relative_path.clone(),
-                    change_type: if change.base_content.is_empty() {
-                        "created".to_string()
-                    } else {
-                        "modified".to_string()
-                    },
+                    previous_relative_path: change.previous_relative_path,
+                    change_type: change.change_type,
                     base_version_id: change.base_version_id,
                     base_hash: change.base_hash,
                     candidate_version_id: change.candidate_version_id,
                     candidate_hash: change.candidate_hash,
-                    status: "pending".to_string(),
+                    status: change.status,
+                    superseded_by: change.superseded_by,
+                    superseded_change_set_ids: change.superseded_change_set_ids,
                     source_type: "external".to_string(),
                     source: change.source.clone(),
                     agent: None,
@@ -180,6 +217,8 @@ impl ChangeMonitorState {
                 candidate_content: change.candidate_content,
                 base_encoding: change.base_encoding,
                 candidate_encoding: change.candidate_encoding,
+                base_exists: change.base_exists,
+                candidate_exists: change.candidate_exists,
             })
             .collect();
     }
@@ -202,11 +241,13 @@ impl ChangeMonitorState {
         }
     }
 
-    fn record_external_candidate(
+    fn record_external_change(
         &self,
         generation: u64,
         relative_path: &str,
-        candidate: Snapshot,
+        previous_relative_path: Option<&str>,
+        requested_change_type: &str,
+        candidate: Option<Snapshot>,
         source: Option<String>,
     ) -> Option<ChangeSetSummary> {
         let mut inner = self.inner.lock().expect("change monitor state");
@@ -214,49 +255,113 @@ impl ChangeMonitorState {
             return None;
         }
 
-        if inner
-            .internal_saves
-            .get(relative_path)
-            .is_some_and(|planned_hash| planned_hash == &candidate.content_hash)
-        {
-            inner.internal_saves.remove(relative_path);
-            inner.baseline.insert(relative_path.to_string(), candidate);
-            return None;
+        if let Some(candidate) = candidate.as_ref() {
+            if inner
+                .internal_saves
+                .get(relative_path)
+                .is_some_and(|planned_hash| planned_hash == &candidate.content_hash)
+            {
+                inner.internal_saves.remove(relative_path);
+                inner
+                    .baseline
+                    .insert(relative_path.to_string(), candidate.clone());
+                return None;
+            }
         }
 
-        let base = inner
-            .baseline
-            .get(relative_path)
-            .cloned()
-            .unwrap_or_else(|| Snapshot {
-                content: String::new(),
-                content_hash: content_hash(&[]),
-                encoding: "utf-8".to_string(),
-            });
+        let related = inner
+            .changes
+            .iter()
+            .filter(|change| {
+                change.summary.status == "pending"
+                    && paths_overlap(&change.summary, relative_path, previous_relative_path)
+            })
+            .map(|change| change.summary.id.clone())
+            .collect::<Vec<_>>();
+        let previous_record = inner
+            .changes
+            .iter()
+            .rev()
+            .find(|change| paths_overlap(&change.summary, relative_path, previous_relative_path))
+            .cloned();
+        let base_path = previous_record
+            .as_ref()
+            .and_then(|change| {
+                change
+                    .summary
+                    .previous_relative_path
+                    .as_deref()
+                    .or(Some(change.summary.relative_path.as_str()))
+            })
+            .or(previous_relative_path)
+            .unwrap_or(relative_path);
+        let (base, base_exists) = if let Some(change) = previous_record.as_ref() {
+            (
+                Snapshot {
+                    content: change.base_content.clone(),
+                    content_hash: change.summary.base_hash.clone(),
+                    encoding: change.base_encoding.clone(),
+                },
+                change.base_exists,
+            )
+        } else if let Some(base) = inner.baseline.get(base_path).cloned() {
+            (base, true)
+        } else {
+            (
+                Snapshot {
+                    content: String::new(),
+                    content_hash: content_hash(&[]),
+                    encoding: "utf-8".to_string(),
+                },
+                false,
+            )
+        };
+        let candidate_exists = candidate.is_some();
+        let candidate = candidate.unwrap_or_else(|| Snapshot {
+            content: String::new(),
+            content_hash: content_hash(&[]),
+            encoding: base.encoding.clone(),
+        });
 
-        if base.content_hash == candidate.content_hash
+        if base_exists == candidate_exists
+            && base.content_hash == candidate.content_hash
+            && base_path == relative_path
             || inner.changes.iter().any(|change| {
                 change.summary.relative_path == relative_path
                     && change.summary.candidate_hash == candidate.content_hash
+                    && change.candidate_exists == candidate_exists
             })
         {
             return None;
         }
 
         inner.next_id = inner.next_id.wrapping_add(1);
+        let id = format!("cs-{}-{}", now_millis(), inner.next_id);
+        for change in &mut inner.changes {
+            if related.contains(&change.summary.id) {
+                change.summary.status = "superseded".to_string();
+                change.summary.superseded_by = Some(id.clone());
+            }
+        }
+        let change_type = previous_record
+            .as_ref()
+            .map(|change| change.summary.change_type.clone())
+            .unwrap_or_else(|| requested_change_type.to_string());
         let summary = ChangeSetSummary {
-            id: format!("cs-{}-{}", now_millis(), inner.next_id),
+            id,
             relative_path: relative_path.to_string(),
-            change_type: if inner.baseline.contains_key(relative_path) {
-                "modified".to_string()
-            } else {
-                "created".to_string()
-            },
+            previous_relative_path: previous_record
+                .as_ref()
+                .and_then(|change| change.summary.previous_relative_path.clone())
+                .or_else(|| previous_relative_path.map(str::to_string)),
+            change_type,
             base_version_id: format!("version-{}", base.content_hash),
             base_hash: base.content_hash.clone(),
             candidate_version_id: format!("version-{}", candidate.content_hash),
             candidate_hash: candidate.content_hash.clone(),
             status: "pending".to_string(),
+            superseded_by: None,
+            superseded_change_set_ids: related,
             source_type: "external".to_string(),
             source,
             agent: None,
@@ -270,8 +375,39 @@ impl ChangeMonitorState {
             candidate_content: candidate.content,
             base_encoding: base.encoding,
             candidate_encoding: candidate.encoding,
+            base_exists,
+            candidate_exists,
         });
         Some(summary)
+    }
+
+    #[cfg(test)]
+    fn record_external_candidate(
+        &self,
+        generation: u64,
+        relative_path: &str,
+        candidate: Snapshot,
+        source: Option<String>,
+    ) -> Option<ChangeSetSummary> {
+        let change_type = if self
+            .inner
+            .lock()
+            .expect("state")
+            .baseline
+            .contains_key(relative_path)
+        {
+            "modified"
+        } else {
+            "created"
+        };
+        self.record_external_change(
+            generation,
+            relative_path,
+            None,
+            change_type,
+            Some(candidate),
+            source,
+        )
     }
 
     fn list_changes(&self) -> Vec<ChangeSetSummary> {
@@ -296,6 +432,8 @@ impl ChangeMonitorState {
                 candidate_content: change.candidate_content.clone(),
                 base_encoding: change.base_encoding.clone(),
                 candidate_encoding: change.candidate_encoding.clone(),
+                base_exists: change.base_exists,
+                candidate_exists: change.candidate_exists,
             })
     }
 
@@ -315,14 +453,46 @@ impl ChangeMonitorState {
                         candidate_content: change.candidate_content.clone(),
                         base_encoding: change.base_encoding.clone(),
                         candidate_encoding: change.candidate_encoding.clone(),
+                        base_exists: change.base_exists,
+                        candidate_exists: change.candidate_exists,
                     },
                 )
             })
     }
 
+    pub(crate) fn actionable_review_context(
+        &self,
+        id: &str,
+    ) -> Result<(String, ChangeSetDetail), CommandError> {
+        let context = self.review_context(id).ok_or_else(|| {
+            CommandError::new(
+                "CHANGE_SET_UNAVAILABLE",
+                "This change set is no longer available.",
+            )
+        })?;
+        if context.1.summary.status != "pending" {
+            return Err(CommandError::new(
+                "CHANGE_SET_SUPERSEDED",
+                "A newer change set replaced this one.",
+            ));
+        }
+        Ok(context)
+    }
+
     pub(crate) fn remove_change(&self, id: &str) {
         let mut inner = self.inner.lock().expect("change monitor state");
         inner.changes.retain(|change| change.summary.id != id);
+    }
+
+    pub(crate) fn mark_stale(&self, id: &str) {
+        let mut inner = self.inner.lock().expect("change monitor state");
+        if let Some(change) = inner
+            .changes
+            .iter_mut()
+            .find(|change| change.summary.id == id)
+        {
+            change.summary.status = "stale".to_string();
+        }
     }
 
     pub(crate) fn change_ids_for_path(&self, relative_path: &str) -> Vec<String> {
@@ -370,48 +540,174 @@ fn path_is_ignored(relative_path: &Path) -> bool {
     })
 }
 
-fn normalize_event_paths(root: &Path, event: Event) -> HashSet<String> {
+fn paths_overlap(
+    summary: &ChangeSetSummary,
+    relative_path: &str,
+    previous_relative_path: Option<&str>,
+) -> bool {
+    let mut existing = vec![summary.relative_path.as_str()];
+    if let Some(previous) = summary.previous_relative_path.as_deref() {
+        existing.push(previous);
+    }
+    existing.contains(&relative_path)
+        || previous_relative_path.is_some_and(|path| existing.contains(&path))
+}
+
+fn normalize_markdown_path(root: &Path, path: &Path) -> Option<String> {
+    if !path.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
+    }) {
+        return None;
+    }
+    let relative = path.strip_prefix(root).ok()?;
+    if path_is_ignored(relative) {
+        return None;
+    }
+    Some(relative.to_string_lossy().replace('\\', "/"))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum WorkspaceFileEvent {
+    Changed(String),
+    Removed(String),
+    Renamed { from: String, to: String },
+}
+
+fn normalize_event(root: &Path, event: Event) -> Vec<WorkspaceFileEvent> {
+    if matches!(
+        event.kind,
+        EventKind::Modify(ModifyKind::Name(RenameMode::Both))
+    ) && event.paths.len() >= 2
+    {
+        let from = normalize_markdown_path(root, &event.paths[0]);
+        let to = normalize_markdown_path(root, &event.paths[1]);
+        return match (from, to) {
+            (Some(from), Some(to)) => vec![WorkspaceFileEvent::Renamed { from, to }],
+            (Some(from), None) => vec![WorkspaceFileEvent::Removed(from)],
+            (None, Some(to)) => vec![WorkspaceFileEvent::Changed(to)],
+            (None, None) => Vec::new(),
+        };
+    }
+
     event
         .paths
         .into_iter()
         .filter_map(|path| {
-            if !path.is_file()
-                || !path.extension().is_some_and(|extension| {
-                    extension.eq_ignore_ascii_case("md")
-                        || extension.eq_ignore_ascii_case("markdown")
-                })
-            {
-                return None;
-            }
-            let relative = path.strip_prefix(root).ok()?;
-            if path_is_ignored(relative) {
-                return None;
-            }
-            Some(relative.to_string_lossy().replace('\\', "/"))
+            let relative = normalize_markdown_path(root, &path)?;
+            Some(
+                if matches!(event.kind, EventKind::Remove(_))
+                    || matches!(
+                        event.kind,
+                        EventKind::Modify(ModifyKind::Name(RenameMode::From))
+                    )
+                {
+                    WorkspaceFileEvent::Removed(relative)
+                } else {
+                    WorkspaceFileEvent::Changed(relative)
+                },
+            )
         })
         .collect()
 }
 
-fn process_paths(
+fn process_events(
     app: &AppHandle,
     state: &ChangeMonitorState,
     generation: u64,
     root_path: &str,
-    paths: HashSet<String>,
+    events: HashSet<WorkspaceFileEvent>,
 ) {
-    let mut paths = paths.into_iter().collect::<Vec<_>>();
-    paths.sort();
-    for relative_path in paths {
-        let Ok(opened) = read_markdown_file_sync(root_path, &relative_path) else {
-            continue;
+    let mut events = events.into_iter().collect::<Vec<_>>();
+    let explicit_renames = events
+        .iter()
+        .filter_map(|event| match event {
+            WorkspaceFileEvent::Renamed { from, to } => Some((from.clone(), to.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    events.retain(|event| {
+        !explicit_renames.iter().any(|(from, to)| {
+            matches!(event, WorkspaceFileEvent::Removed(path) if path == from)
+                || matches!(event, WorkspaceFileEvent::Changed(path) if path == to)
+        }) || matches!(event, WorkspaceFileEvent::Renamed { .. })
+    });
+    if explicit_renames.is_empty() {
+        let removed = events
+            .iter()
+            .filter_map(|event| match event {
+                WorkspaceFileEvent::Removed(path) => Some(path.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let created = events
+            .iter()
+            .filter_map(|event| match event {
+                WorkspaceFileEvent::Changed(path) => {
+                    let inner = state.inner.lock().expect("state");
+                    (!inner.baseline.contains_key(path)).then_some(path.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if removed.len() == 1 && created.len() == 1 {
+            let from = removed[0].clone();
+            let to = created[0].clone();
+            if state
+                .inner
+                .lock()
+                .expect("state")
+                .baseline
+                .contains_key(&from)
+            {
+                events.retain(|event| {
+                    !matches!(event, WorkspaceFileEvent::Removed(path) if path == &from)
+                        && !matches!(event, WorkspaceFileEvent::Changed(path) if path == &to)
+                });
+                events.push(WorkspaceFileEvent::Renamed { from, to });
+            }
+        }
+    }
+    events.sort_by_key(|event| match event {
+        WorkspaceFileEvent::Renamed { .. } => 0,
+        WorkspaceFileEvent::Removed(_) => 1,
+        WorkspaceFileEvent::Changed(_) => 2,
+    });
+    for event in events {
+        let (relative_path, previous_relative_path, change_type, candidate) = match event {
+            WorkspaceFileEvent::Changed(relative_path) => {
+                let Ok(opened) = read_markdown_file_sync(root_path, &relative_path) else {
+                    continue;
+                };
+                let change_type = if state
+                    .inner
+                    .lock()
+                    .expect("state")
+                    .baseline
+                    .contains_key(&relative_path)
+                {
+                    "modified"
+                } else {
+                    "created"
+                };
+                (relative_path, None, change_type, Some(opened.into()))
+            }
+            WorkspaceFileEvent::Removed(relative_path) => (relative_path, None, "deleted", None),
+            WorkspaceFileEvent::Renamed { from, to } => {
+                let Ok(opened) = read_markdown_file_sync(root_path, &to) else {
+                    continue;
+                };
+                (to, Some(from), "renamed", Some(opened.into()))
+            }
         };
         let attributed_source = app
             .state::<AttributionLedger>()
             .take_match(&Path::new(root_path).join(&relative_path), now_millis());
-        if let Some(change) = state.record_external_candidate(
+        if let Some(change) = state.record_external_change(
             generation,
             &relative_path,
-            opened.into(),
+            previous_relative_path.as_deref(),
+            change_type,
+            candidate,
             attributed_source,
         ) {
             let Some(detail) = state.get_change(&change.id) else {
@@ -454,11 +750,13 @@ fn watcher_loop(
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
 
-        let mut paths = normalize_event_paths(&root, first_event);
+        let mut events = normalize_event(&root, first_event)
+            .into_iter()
+            .collect::<HashSet<_>>();
         let started = std::time::Instant::now();
         while let Some(remaining) = DEBOUNCE_WINDOW.checked_sub(started.elapsed()) {
             match event_receiver.recv_timeout(remaining) {
-                Ok(Ok(event)) => paths.extend(normalize_event_paths(&root, event)),
+                Ok(Ok(event)) => events.extend(normalize_event(&root, event)),
                 Ok(Err(_)) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => break,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -466,7 +764,7 @@ fn watcher_loop(
         }
 
         let state = app.state::<ChangeMonitorState>();
-        process_paths(&app, &state, generation, &root_path, paths);
+        process_events(&app, &state, generation, &root_path, events);
     }
 }
 
@@ -616,6 +914,66 @@ mod tests {
 
         assert_eq!(first.base_hash, second.base_hash);
         assert_ne!(first.candidate_hash, second.candidate_hash);
+        assert_eq!(
+            state.get_change(&first.id).expect("first").summary.status,
+            "superseded"
+        );
+        assert_eq!(
+            state
+                .get_change(&first.id)
+                .expect("first")
+                .summary
+                .superseded_by
+                .as_deref(),
+            Some(second.id.as_str())
+        );
+        assert_eq!(second.superseded_change_set_ids, vec![first.id]);
+    }
+
+    #[test]
+    fn marks_a_conflicted_change_set_as_stale() {
+        let state = state_with_baseline("note.md", "# Base");
+        let generation = state.inner.lock().expect("state").generation;
+        let change = state
+            .record_external_candidate(generation, "note.md", snapshot("# Candidate"), None)
+            .expect("candidate");
+
+        state.mark_stale(&change.id);
+
+        assert_eq!(
+            state.get_change(&change.id).expect("change").summary.status,
+            "stale"
+        );
+    }
+
+    #[test]
+    fn records_deleted_and_renamed_files_with_existence_semantics() {
+        let deleted_state = state_with_baseline("note.md", "# Base");
+        let generation = deleted_state.inner.lock().expect("state").generation;
+        let deleted = deleted_state
+            .record_external_change(generation, "note.md", None, "deleted", None, None)
+            .expect("deleted change");
+        let deleted_detail = deleted_state
+            .get_change(&deleted.id)
+            .expect("deleted detail");
+        assert_eq!(deleted.change_type, "deleted");
+        assert!(deleted_detail.base_exists);
+        assert!(!deleted_detail.candidate_exists);
+
+        let renamed_state = state_with_baseline("before.md", "# Base");
+        let generation = renamed_state.inner.lock().expect("state").generation;
+        let renamed = renamed_state
+            .record_external_change(
+                generation,
+                "after.md",
+                Some("before.md"),
+                "renamed",
+                Some(snapshot("# Base")),
+                None,
+            )
+            .expect("renamed change");
+        assert_eq!(renamed.change_type, "renamed");
+        assert_eq!(renamed.previous_relative_path.as_deref(), Some("before.md"));
     }
 
     #[test]
@@ -627,6 +985,13 @@ mod tests {
             vec![PendingChangeSet {
                 id: "cs-persisted".to_string(),
                 relative_path: "note.md".to_string(),
+                previous_relative_path: None,
+                change_type: "modified".to_string(),
+                status: "pending".to_string(),
+                superseded_by: None,
+                superseded_change_set_ids: Vec::new(),
+                base_exists: true,
+                candidate_exists: true,
                 base_version_id: "version-base".to_string(),
                 base_content: "# Base".to_string(),
                 base_hash: content_hash(b"# Base"),

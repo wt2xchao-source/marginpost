@@ -9,10 +9,10 @@
 <h1 align="center">MarginPost</h1>
 
 <p align="center">
-  在编码 Agent 对 Markdown 的修改写入磁盘前完成审阅。
+  外部工具写入 Markdown 后，在其成为工作区基线前完成审阅。
 </p>
 
-> V0.1 公开预览版。源代码现已开放测试，暂不提供打包版本。
+> V0.3 公开预览版。源代码及使用 ad-hoc 签名的 Apple Silicon macOS 安装包现已开放测试。
 
 MarginPost 是一个本地优先的 Markdown 工作区，用于审阅编码 Agent、脚本和其他外部工具对文件所做的修改。
 
@@ -20,7 +20,7 @@ MarginPost 是一个本地优先的 Markdown 工作区，用于审阅编码 Agen
 
 ## 公开测试：欢迎反馈
 
-MarginPost V0.1 目前是测试版本，并非正式生产版本。现阶段只验证了 macOS 本地源码构建，暂不提供打包安装程序，Windows 和 Linux 仍未验证。
+MarginPost V0.3 目前是测试版本，并非正式生产版本。
 
 测试时请优先使用非关键 Markdown 文件的副本，并为重要内容保留备份。我们尤其希望了解：
 
@@ -62,34 +62,51 @@ MarginPost 将以下能力整合在同一个工作区中：
 
 ![MarginPost 版本历史](assets/screenshots/history.jpg)
 
-## V0.1 范围
+### 两分钟演示
+
+[观看带英文旁白和内嵌中文字幕的 V0.3 完整演示](assets/demo/marginpost-demo-v0.3.0.mp4)
+
+[英文字幕](assets/demo/marginpost-demo-v0.3.0-en.srt)
+·
+[中文字幕](assets/demo/marginpost-demo-v0.3.0-zh-CN.srt)
+
+## V0.3 范围
 
 - 打开本地文件夹
+- 搜索工作区中的 Markdown 文件
 - 将本地文件夹或 Markdown 文件拖入桌面窗口
 - 基础 Markdown 编辑
 - 检测外部文件变化
+- 检测 Markdown 新建、删除和重命名事件
 - 创建 Change Set
-- 句子级和段落级 Diff
+- 基于 GFM/CommonMark AST 的结构化块比较
 - 接受或拒绝单处修改
 - 接受或拒绝整个 Change Set
-- 版本历史与恢复
+- 使用按钮或快捷键切换修改，并撤销上一次裁决
+- 同一文件再次变化时，将旧候选明确标记为已被替代
+- 磁盘冲突后显示过期 Change Set
+- 筛选待审阅或全部 Change Set
+- 版本历史、结构化版本比较与恢复
+
+MarginPost 不是写入前沙箱。外部工具会先写入磁盘，MarginPost 捕获真实的文件系统结果，并在执行审阅裁决前再次核验候选状态。详见 [Change Set 生命周期](docs/CHANGE_SET_LIFECYCLE.md)。
 
 ## 明确不做
 
-V0.1 不包含 AI 写作、账号、云同步、多人协作、主题商城、复杂导出、Agent 身份推断、多 Agent 冲突解决、自动生成修改理由或风险评分。只有外部工具通过已公开的本地 Hook 主动报告时，才会显示可选的来源标签。
+V0.3 不包含 AI 写作、账号、云同步、多人协作、主题商城、复杂导出、Agent 身份推断、多 Agent 冲突解决、自动生成修改理由或风险评分。只有外部工具通过已公开的本地 Hook 主动报告时，才会显示可选的来源标签。详见 [Agent Hook 使用文档](docs/AGENT_HOOKS.md)。
 
 ## 当前状态
 
-V0.1 完整链路已通过本地验收，包括工作区编辑、外部修改捕获、待处理 Change Set 持久化、结构化审阅、单处与整体裁决、磁盘冲突保护、SQLite 版本历史、版本预览和安全恢复。恢复历史版本前，MarginPost 会先保存当前磁盘内容，并记录本次恢复操作。界面支持中英文切换，并会记住本地语言偏好。在桌面端，拖入文件夹会将其作为工作区打开；拖入单个 Markdown 文件会打开其所在文件夹并选中该文件。
+V0.3 完整链路已通过本地自动化验收，包括工作区编辑、外部修改捕获、待处理 Change Set 持久化、结构化审阅、单处与整体裁决、新建/删除/重命名语义、过期与已被替代状态、SQLite 版本历史、相邻版本结构化比较和安全恢复。恢复历史版本前，MarginPost 会先保存当前磁盘内容，并记录本次恢复操作。
 
-当前验收范围仅限 macOS 本地环境。Windows 和 Linux 打包、签名、安装程序行为及公开分发尚未验证。拖拽入口及其自动化测试已经完成，但仍需进行一次真实的 Finder 到应用窗口拖拽确认。
+V0.3.0 GitHub Release 提供使用 ad-hoc 签名的 Apple Silicon macOS `.dmg`。它没有使用 Apple Developer ID 签名，也没有经过公证。CI 已配置 Windows 和 Linux 源码验证任务；在 GitHub 托管任务通过前，相关支持仍属于暂定状态。
 
 ## 已知限制
 
-- 目前只验证了 macOS 本地开发环境和候选版本构建。
-- Windows、Linux 构建，签名或公证安装包，以及公开更新分发尚未验证。
+- macOS 安装包仅支持 Apple Silicon，使用 ad-hoc 签名且未公证。
+- 暂不提供 Windows 和 Linux 桌面安装包。
+- 尚未实现自动更新。
 - 尚未测试大文件和大型工作区的性能。
-- 尚未完成正式的屏幕阅读器和纯键盘无障碍审计。
+- 已实现审阅快捷键，但尚未完成正式的屏幕阅读器及完整纯键盘无障碍审计。
 - Agent 来源标签依赖本地 Hook 主动报告；MarginPost 不会推断是哪个进程修改了文件。
 
 ## 技术方向
@@ -99,9 +116,15 @@ V0.1 完整链路已通过本地验收，包括工作区编辑、外部修改捕
 - CodeMirror 6
 - Rust 文件系统服务
 - SQLite
-- 可替换的 Diff 引擎
+- `markdown` mdast 解析器和可替换的 Diff 引擎
 
-## 快速开始
+## 在 macOS 上安装
+
+[从 GitHub Releases 下载 MarginPost V0.3.0](https://github.com/wt2xchao-source/marginpost/releases/tag/v0.3.0)。
+
+安装包仅适用于 Apple Silicon Mac，使用 ad-hoc 签名，没有使用 Apple Developer ID 签名，也没有经过公证。macOS 首次启动时可能拦截应用。请在 Finder 中按住 Control 点击应用，选择“打开”并确认警告。不要全局关闭 Gatekeeper。
+
+## 从源码运行
 
 MarginPost 是一款桌面应用，**不需要账号、API Key 或网络连接**，所有数据都在本地处理。
 
@@ -134,8 +157,6 @@ cargo check --locked --manifest-path src-tauri/Cargo.toml
 
 在全新检出的仓库中，必须先完成前端构建，再运行 Rust 检查，因为 Tauri 配置引用了 `dist/`。
 
-现在可以直接从 GitHub 克隆仓库。签名安装包和打包版本暂未提供。
-
 ## 开源协议
 
 版权所有 © 2026 MarginPost contributors。
@@ -155,4 +176,4 @@ MarginPost™ 和 MarginPost 标志是项目所有者尚未注册的商标。Apa
 
 ## 公开预览
 
-MarginPost 当前以 V0.1 公开预览版开放，并采用 Apache-2.0 协议。暂不提供签名安装包或打包版本。Bug 和产品反馈请提交至 GitHub Issues；安全漏洞请按照 `SECURITY.md` 报告。
+MarginPost V0.3.0 当前以 Apache-2.0 公开预览版开放。Bug 和产品反馈请提交至 GitHub Issues；安全漏洞请按照 `SECURITY.md` 报告。

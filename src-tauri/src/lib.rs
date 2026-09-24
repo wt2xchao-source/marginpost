@@ -76,10 +76,10 @@ fn now_millis() -> u64 {
 #[tauri::command]
 fn technical_baseline() -> serde_json::Value {
     serde_json::json!({
-        "stage": "AMR-011",
+        "stage": "AMR-014",
         "file_source": "local",
         "change_detector": "notify",
-        "diff_engine": "similar-structured-markdown",
+        "diff_engine": "markdown-mdast-plus-similar",
         "version_store": "sqlite-schema-v2"
     })
 }
@@ -174,6 +174,7 @@ pub fn run() {
             review::discard_change_set,
             history::list_document_versions,
             history::get_document_version,
+            history::compare_document_versions,
             history::restore_document_version
         ])
         .run(tauri::generate_context!())

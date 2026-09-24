@@ -17,6 +17,12 @@ struct ChangeSetMetadata {
     change_set_id: String,
     base_version_id: Option<String>,
     status: Option<String>,
+    change_type: Option<String>,
+    previous_relative_path: Option<String>,
+    base_relative_path: Option<String>,
+    base_exists: Option<bool>,
+    candidate_exists: Option<bool>,
+    superseded_by: Option<String>,
     #[serde(default)]
     superseded_change_set_ids: Vec<String>,
 }
@@ -558,6 +564,47 @@ impl VersionStore for SqliteVersionStore {
             resolved_ids.extend(metadata.superseded_change_set_ids);
         }
 
+        let parsed_candidates = candidates
+            .into_iter()
+            .filter_map(
+                |(
+                    candidate_version_id,
+                    relative_path,
+                    candidate_content,
+                    candidate_hash,
+                    candidate_encoding,
+                    detected_at,
+                    metadata_json,
+                    source,
+                )| {
+                    let metadata =
+                        serde_json::from_str::<ChangeSetMetadata>(&metadata_json).ok()?;
+                    (!resolved_ids.contains(&metadata.change_set_id)).then_some((
+                        candidate_version_id,
+                        relative_path,
+                        candidate_content,
+                        candidate_hash,
+                        candidate_encoding,
+                        detected_at,
+                        source,
+                        metadata,
+                    ))
+                },
+            )
+            .collect::<Vec<_>>();
+        let mut latest_candidates = std::collections::HashMap::new();
+        for candidate in parsed_candidates {
+            latest_candidates.insert(candidate.7.change_set_id.clone(), candidate);
+        }
+        let mut parsed_candidates = latest_candidates.into_values().collect::<Vec<_>>();
+        parsed_candidates.sort_by_key(|candidate| candidate.5);
+        let mut superseded_by = std::collections::HashMap::new();
+        for candidate in &parsed_candidates {
+            for superseded_id in &candidate.7.superseded_change_set_ids {
+                superseded_by.insert(superseded_id.clone(), candidate.7.change_set_id.clone());
+            }
+        }
+
         let mut pending = Vec::new();
         for (
             candidate_version_id,
@@ -566,21 +613,23 @@ impl VersionStore for SqliteVersionStore {
             candidate_hash,
             candidate_encoding,
             detected_at,
-            metadata_json,
             source,
-        ) in candidates
+            metadata,
+        ) in parsed_candidates
         {
-            let Ok(metadata) = serde_json::from_str::<ChangeSetMetadata>(&metadata_json) else {
-                continue;
-            };
-            if metadata.status.as_deref() != Some("pending")
-                || resolved_ids.contains(&metadata.change_set_id)
-            {
+            if !matches!(
+                metadata.status.as_deref(),
+                Some("pending" | "superseded" | "stale")
+            ) {
                 continue;
             }
-            let Some(base_version_id) = metadata.base_version_id else {
+            let Some(base_version_id) = metadata.base_version_id.clone() else {
                 continue;
             };
+            let base_relative_path = metadata
+                .base_relative_path
+                .as_deref()
+                .unwrap_or(&relative_path);
             let Some(base) = connection
                 .query_row(
                     "
@@ -590,7 +639,7 @@ impl VersionStore for SqliteVersionStore {
                     JOIN workspaces w ON w.id = d.workspace_id
                     WHERE w.root_path = ?1 AND d.relative_path = ?2 AND v.id = ?3
                     ",
-                    params![root_path, relative_path, base_version_id],
+                    params![root_path, base_relative_path, base_version_id],
                     |row| {
                         Ok((
                             row.get::<_, String>(0)?,
@@ -604,8 +653,29 @@ impl VersionStore for SqliteVersionStore {
                 continue;
             };
             pending.push(PendingChangeSet {
-                id: metadata.change_set_id,
+                id: metadata.change_set_id.clone(),
                 relative_path,
+                previous_relative_path: metadata.previous_relative_path,
+                change_type: metadata.change_type.unwrap_or_else(|| {
+                    if base.0.is_empty() {
+                        "created"
+                    } else {
+                        "modified"
+                    }
+                    .to_string()
+                }),
+                status: if superseded_by.contains_key(&metadata.change_set_id) {
+                    "superseded".to_string()
+                } else {
+                    metadata.status.unwrap_or_else(|| "pending".to_string())
+                },
+                superseded_by: superseded_by
+                    .get(&metadata.change_set_id)
+                    .cloned()
+                    .or(metadata.superseded_by),
+                superseded_change_set_ids: metadata.superseded_change_set_ids,
+                base_exists: metadata.base_exists.unwrap_or(true),
+                candidate_exists: metadata.candidate_exists.unwrap_or(true),
                 base_version_id,
                 base_content: base.0,
                 base_hash: base.1,

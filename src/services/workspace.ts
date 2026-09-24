@@ -32,12 +32,15 @@ export interface WorkspaceError {
 export interface ChangeSetSummary {
   id: string;
   relativePath: string;
-  changeType: "created" | "modified";
+  previousRelativePath?: string;
+  changeType: "created" | "modified" | "deleted" | "renamed";
   baseVersionId: string;
   baseHash: string;
   candidateVersionId: string;
   candidateHash: string;
-  status: "pending";
+  status: "pending" | "superseded" | "stale";
+  supersededBy?: string;
+  supersededChangeSetIds?: string[];
   sourceType: "external";
   source?: string;
   agent?: string;
@@ -85,6 +88,8 @@ export type ReviewDecision = "accepted" | "rejected";
 export interface ResolveResult {
   content: string;
   contentHash: string;
+  relativePath?: string;
+  exists?: boolean;
 }
 
 export interface DocumentVersionSummary {
@@ -121,6 +126,12 @@ export interface RestoreResult {
   contentHash: string;
   encoding: "utf-8" | "utf-8-bom";
   version: DocumentVersionSummary;
+}
+
+export interface VersionComparison {
+  base: DocumentVersionSummary;
+  candidate: DocumentVersionSummary;
+  changes: StructuredChange[];
 }
 
 export type StopWorkspaceWatch = () => Promise<void>;
@@ -349,6 +360,7 @@ export async function getChangeSetReview(id: string): Promise<ChangeSetReview | 
 export async function resolveChangeSet(
   id: string,
   decisions: Array<{ changeId: string; decision: ReviewDecision }>,
+  fileDecision?: ReviewDecision,
 ): Promise<ResolveResult> {
   if (!isTauriRuntime()) {
     const review = browserReviews[id];
@@ -399,9 +411,11 @@ export async function resolveChangeSet(
     return {
       content,
       contentHash: version.contentHash,
+      relativePath: review.summary.relativePath,
+      exists: true,
     };
   }
-  return invoke<ResolveResult>("resolve_change_set", { id, decisions });
+  return invoke<ResolveResult>("resolve_change_set", { id, decisions, fileDecision });
 }
 
 export async function listDocumentVersions(
@@ -445,6 +459,60 @@ export async function getDocumentVersion(
     rootPath,
     relativePath,
     versionId,
+  });
+}
+
+export async function compareDocumentVersions(
+  rootPath: string,
+  relativePath: string,
+  baseVersionId: string,
+  candidateVersionId: string,
+): Promise<VersionComparison> {
+  if (!isTauriRuntime()) {
+    const versions = browserVersions[relativePath] ?? [];
+    const base = versions.find((version) => version.id === baseVersionId);
+    const candidate = versions.find(
+      (version) => version.id === candidateVersionId,
+    );
+    if (!base || !candidate) {
+      throw { code: "VERSION_UNAVAILABLE", message: "Version unavailable." };
+    }
+    const { content: _baseContent, metadataJson: _baseMetadata, ...baseSummary } =
+      base;
+    const {
+      content: _candidateContent,
+      metadataJson: _candidateMetadata,
+      ...candidateSummary
+    } = candidate;
+    return {
+      base: baseSummary,
+      candidate: candidateSummary,
+      changes:
+        base.content === candidate.content
+          ? []
+          : [
+              {
+                id: "change-1",
+                sequence: 0,
+                blockType: "unknown",
+                changeType: "rewritten",
+                oldStart: 0,
+                oldEnd: base.content.length,
+                newStart: 0,
+                newEnd: candidate.content.length,
+                oldText: base.content,
+                newText: candidate.content,
+                oldSegments: [{ kind: "deleted", text: base.content }],
+                newSegments: [{ kind: "added", text: candidate.content }],
+              },
+            ],
+    };
+  }
+  return invoke<VersionComparison>("compare_document_versions", {
+    rootPath,
+    relativePath,
+    baseVersionId,
+    candidateVersionId,
   });
 }
 
@@ -512,12 +580,15 @@ External tools can now place file-level changes into the review inbox.
       const changeSet: ChangeSetSummary = {
         id: `preview-change-${Date.now()}`,
         relativePath: "README.md",
+        previousRelativePath: undefined,
         changeType: "modified",
         baseVersionId: `preview-version-${baseContent.length}`,
         baseHash: `preview-base-${baseContent.length}`,
         candidateVersionId: `preview-version-${candidateContent.length}`,
         candidateHash: `preview-candidate-${candidateContent.length}`,
         status: "pending",
+        supersededBy: undefined,
+        supersededChangeSetIds: [],
         sourceType: "external",
         detectedAt: Date.now(),
         schemaVersion: 1,

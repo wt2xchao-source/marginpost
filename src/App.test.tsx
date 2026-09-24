@@ -11,6 +11,7 @@ import {
 } from "./services/notifications";
 import {
   chooseWorkspace,
+  compareDocumentVersions,
   discardChangeSet,
   getDocumentVersion,
   getChangeSetReview,
@@ -49,6 +50,7 @@ vi.mock("./services/workspace", async () => {
   return {
     ...actual,
     chooseWorkspace: vi.fn(),
+    compareDocumentVersions: vi.fn(),
     discardChangeSet: vi.fn(),
     getDocumentVersion: vi.fn(),
     getChangeSetReview: vi.fn(),
@@ -82,6 +84,7 @@ vi.mock("./services/notifications", async () => {
 });
 
 const mockedChooseWorkspace = vi.mocked(chooseWorkspace);
+const mockedCompareDocumentVersions = vi.mocked(compareDocumentVersions);
 const mockedDiscardChangeSet = vi.mocked(discardChangeSet);
 const mockedGetDocumentVersion = vi.mocked(getDocumentVersion);
 const mockedGetChangeSetReview = vi.mocked(getChangeSetReview);
@@ -141,6 +144,44 @@ describe("App", () => {
     mockedWatchNotificationActivation.mockResolvedValue(() => {});
     mockedDiscardChangeSet.mockResolvedValue(undefined);
     mockedChooseWorkspace.mockResolvedValue("/workspace");
+    mockedCompareDocumentVersions.mockResolvedValue({
+      base: {
+        id: "version-old",
+        relativePath: "notes/product.md",
+        contentHash: "hash-old",
+        encoding: "utf-8",
+        versionType: "editor",
+        createdAt: 1,
+        sourceType: "editor",
+        schemaVersion: 2,
+      },
+      candidate: {
+        id: "version-current",
+        relativePath: "notes/product.md",
+        contentHash: "hash-1",
+        encoding: "utf-8",
+        versionType: "snapshot",
+        createdAt: 2,
+        sourceType: "filesystem",
+        schemaVersion: 2,
+      },
+      changes: [
+        {
+          id: "change-1",
+          sequence: 0,
+          blockType: "heading",
+          changeType: "rewritten",
+          oldStart: 0,
+          oldEnd: 15,
+          newStart: 0,
+          newEnd: 9,
+          oldText: "# Older product",
+          newText: "# Product",
+          oldSegments: [{ kind: "deleted", text: "# Older product" }],
+          newSegments: [{ kind: "added", text: "# Product" }],
+        },
+      ],
+    });
     mockedListMarkdownFiles.mockResolvedValue([
       { relativePath: "notes/product.md", name: "product.md" },
     ]);
@@ -285,6 +326,27 @@ describe("App", () => {
       );
     });
     expect(await screen.findByText("Saved to disk.")).toBeInTheDocument();
+  });
+
+  it("filters workspace files without changing the workspace", async () => {
+    mockedListMarkdownFiles.mockResolvedValueOnce([
+      { relativePath: "notes/product.md", name: "product.md" },
+      { relativePath: "docs/other.md", name: "other.md" },
+    ]);
+    render(<App />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open Markdown Workspace" }),
+    );
+    const search = await screen.findByRole("searchbox", {
+      name: "Search workspace",
+    });
+
+    fireEvent.change(search, { target: { value: "other" } });
+
+    expect(screen.getByRole("button", { name: /other\.md/i })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /product\.md/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("opens a dropped folder as the workspace", async () => {
@@ -638,6 +700,26 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
   });
 
+  it("supports keyboard decisions and undo", async () => {
+    render(<App />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open Markdown Workspace" }),
+    );
+    await waitFor(() => expect(mockedStartWorkspaceWatch).toHaveBeenCalled());
+    emitChangeSet?.(externalChangeSet("cs-1"));
+    fireEvent.click(screen.getByRole("button", { name: "Changes" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Review notes/product.md" }),
+    );
+
+    const accept = await screen.findByRole("button", { name: "Accept" });
+    fireEvent.keyDown(window, { key: "a" });
+    expect(accept).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.keyDown(window, { key: "z", metaKey: true });
+    expect(accept).toHaveAttribute("aria-pressed", "false");
+  });
+
   it("applies a complete set of review decisions", async () => {
     render(<App />);
     fireEvent.click(
@@ -719,7 +801,14 @@ describe("App", () => {
     expect(window.localStorage.getItem("amr-language")).toBe("zh");
   });
 
-  it("keeps the review pending when the disk changes during review", async () => {
+  it("marks the review stale when the disk changes during review", async () => {
+    const staleChangeSet = {
+      ...externalChangeSet("cs-1"),
+      status: "stale" as const,
+    };
+    mockedListChangeSets
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([staleChangeSet]);
     mockedResolveChangeSet.mockRejectedValue({
       code: "REVIEW_CONFLICT",
       message: "conflict",
@@ -761,7 +850,7 @@ describe("App", () => {
       "aria-pressed",
       "true",
     );
-    expect(screen.getByRole("button", { name: "Changes" })).toHaveTextContent("1");
+    expect(screen.getByRole("button", { name: "Changes" })).toHaveTextContent("0");
   });
 
   it("shows a persistent version timeline and previews historical content", async () => {
@@ -782,13 +871,30 @@ describe("App", () => {
       "aria-pressed",
       "true",
     );
-    fireEvent.click(screen.getByRole("button", { name: /Editor save/ }));
-    expect(await screen.findByText("# Older product")).toBeInTheDocument();
-    expect(mockedGetDocumentVersion).toHaveBeenCalledWith(
+    fireEvent.click(
+      screen.getByRole("button", { name: "Compare previous" }),
+    );
+    expect(await screen.findByText("Structured comparison")).toBeInTheDocument();
+    expect(mockedCompareDocumentVersions).toHaveBeenCalledWith(
       "/workspace",
       "notes/product.md",
       "version-old",
+      "version-current",
     );
+    await waitFor(() => {
+      expect(screen.queryByText("Loading history")).not.toBeInTheDocument();
+    });
+    const oldVersion = screen.getByRole("button", { name: /Editor save/ });
+    await waitFor(() => expect(oldVersion).toBeEnabled());
+    fireEvent.click(oldVersion);
+    await waitFor(() => {
+      expect(mockedGetDocumentVersion).toHaveBeenCalledWith(
+        "/workspace",
+        "notes/product.md",
+        "version-old",
+      );
+    });
+    expect(await screen.findByText("# Older product")).toBeInTheDocument();
   });
 
   it("restores a selected version and updates the editor content", async () => {

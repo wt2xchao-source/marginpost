@@ -9,11 +9,12 @@
 <h1 align="center">MarginPost</h1>
 
 <p align="center">
-  Review Markdown changes made by coding agents before they reach disk.
+  Review Markdown changes after external tools write them, before you accept
+  them as the workspace baseline.
 </p>
 
-> V0.1 public preview. The source code is available for testing; packaged
-> releases are not yet provided.
+> V0.3 public preview. Source code and an ad-hoc signed Apple Silicon macOS
+> package are available for testing.
 
 MarginPost is a local-first Markdown workspace for reviewing
 changes made by coding agents, scripts, and other external tools.
@@ -23,18 +24,9 @@ read Git diffs to understand what changed.
 
 ## Public Preview: Your Feedback Matters
 
-MarginPost V0.1 is a testing version, not a production-ready release. The
-current source build has been verified locally on macOS. Packaged installers
-are not yet available, and Windows and Linux remain unverified.
-
+MarginPost V0.3 is a testing release, not a production-ready application.
 Please test with copies of non-critical Markdown files and keep backups of
-important work. We especially want to know:
-
-- whether external changes are captured correctly;
-- whether reviewing, accepting, and rejecting changes feels clear;
-- whether version history and restoration feel trustworthy;
-- where crashes, performance problems, or confusing behavior appear;
-- which real workflows MarginPost still does not support.
+important work.
 
 [Report a bug](https://github.com/wt2xchao-source/marginpost/issues/new?template=bug_report.yml)
 ·
@@ -69,49 +61,67 @@ reviewable work items and presented in document context.
 
 ![MarginPost version history](assets/screenshots/history.jpg)
 
-## V0.1 Scope
+### Two-minute demo
+
+[Watch the V0.3 workflow with English narration and embedded Chinese subtitles](assets/demo/marginpost-demo-v0.3.0.mp4)
+
+[English subtitles](assets/demo/marginpost-demo-v0.3.0-en.srt)
+·
+[Chinese subtitles](assets/demo/marginpost-demo-v0.3.0-zh-CN.srt)
+
+## V0.3 Scope
 
 - Open a local folder
+- Search Markdown files across the workspace
 - Drop a local folder or Markdown file into the desktop window
 - Basic Markdown editing
 - Detect external file changes
+- Detect Markdown creation, deletion, and rename events
 - Create change sets
-- Sentence- and paragraph-level diff
+- GFM/CommonMark AST-backed block comparison
 - Accept or reject individual changes
 - Accept or reject an entire change set
-- Version history and recovery
+- Navigate changes with buttons or keyboard shortcuts and undo the latest decision
+- Mark older candidates as superseded when the same file changes again
+- Show stale Change Sets after disk conflicts
+- Filter pending or all Change Sets
+- Version history, structured version comparison, and recovery
+
+MarginPost is not a pre-write sandbox. External tools write first; MarginPost
+captures the resulting local filesystem change and verifies the candidate
+again before applying a review decision. See
+[Change Set Lifecycle](docs/CHANGE_SET_LIFECYCLE.md).
 
 ## Explicitly Out of Scope
 
-V0.1 does not include AI writing, accounts, cloud sync, team collaboration,
+V0.3 does not include AI writing, accounts, cloud sync, team collaboration,
 themes, complex export, inferred agent identity detection, multi-agent
 conflict resolution, generated change reasons, or risk scoring. Optional
 source labels only appear when an external tool explicitly self-reports
-through the documented local hook.
+through the documented local hook. See [Agent Hooks](docs/AGENT_HOOKS.md).
 
 ## Current Status
 
-The complete V0.1 path has passed local acceptance: workspace editing, external
-change capture, persistent pending Change Sets, structured review, individual
-and complete decisions, disk conflict protection, SQLite version history,
-version preview, and safe restoration. Restoring a version first preserves the
-current disk content and records the restore itself. The interface can switch
-between Chinese and English and remembers the local preference. On desktop, a
-folder can be dropped to open it as the Workspace, while dropping one Markdown
-file opens its parent Workspace and selects that file.
+The complete V0.3 path has passed local automated acceptance: workspace
+editing, external change capture, persistent pending Change Sets, structured
+review, individual and complete decisions, create/delete/rename semantics,
+stale and superseded states, SQLite version history, adjacent-version
+structural comparison, and safe restoration. Restoring a version first
+preserves the current disk content and records the restore itself.
 
-Current acceptance is macOS-local. Windows and Linux packaging, signing,
-installer behavior, and public distribution remain unverified. The drag-entry
-implementation and automated coverage are complete; one physical
-Finder-to-window drag check remains for manual confirmation.
+The V0.3.0 GitHub Release includes an ad-hoc signed Apple Silicon macOS `.dmg`.
+It is not signed with an Apple Developer ID and is not notarized. Windows and
+Linux source-validation jobs are configured in CI; support remains provisional
+until the GitHub-hosted runs pass.
 
 ## Known Limitations
 
-- Only local macOS development and release-candidate builds are verified.
-- Windows and Linux builds, signed/notarized installers, and public update
-  delivery are not yet verified.
+- The macOS package is Apple Silicon only, ad-hoc signed, and not notarized.
+- Windows and Linux packaged applications are not provided.
+- Automatic update delivery is not implemented.
 - Large-file and large-workspace performance has not been benchmarked.
-- A formal screen-reader and keyboard-only accessibility audit is pending.
+- Review shortcuts are implemented, but a formal screen-reader and complete
+  keyboard-only accessibility audit is pending.
 - Agent source labels depend on explicit local hook reporting; MarginPost does
   not infer which process changed a file.
 
@@ -122,9 +132,18 @@ Finder-to-window drag check remains for manual confirmation.
 - CodeMirror 6
 - Rust filesystem services
 - SQLite
-- Replaceable diff engine
+- `markdown` mdast parser plus replaceable diff engine
 
-## Quick Start
+## Install On macOS
+
+[Download MarginPost V0.3.0 from GitHub Releases](https://github.com/wt2xchao-source/marginpost/releases/tag/v0.3.0).
+
+The package is for Apple Silicon Macs. It is ad-hoc signed, not signed with an
+Apple Developer ID, and not notarized. macOS may block the first launch. In
+Finder, Control-click the app, choose **Open**, and confirm the warning. Do not
+disable Gatekeeper globally.
+
+## Build From Source
 
 MarginPost is a desktop app with **no accounts, no API keys, and no
 network requirements** — everything runs locally.
@@ -160,9 +179,6 @@ cargo check --locked --manifest-path src-tauri/Cargo.toml
 The frontend build must run before the Rust checks in a clean checkout because
 the Tauri configuration references `dist/`.
 
-The repository can be cloned directly from GitHub. Signed installers and
-packaged releases are not yet available.
-
 ## License
 
 Copyright 2026 MarginPost contributors.
@@ -191,6 +207,6 @@ and customary use in describing the project.
 
 ## Public Preview
 
-MarginPost is available as a V0.1 public preview under Apache-2.0. No signed
-installers or packaged releases are available yet. Use GitHub Issues for bugs
-and product feedback, and follow `SECURITY.md` for vulnerability reports.
+MarginPost V0.3.0 is available as an Apache-2.0 public preview. Use GitHub
+Issues for bugs and product feedback, and follow `SECURITY.md` for
+vulnerability reports.

@@ -4,7 +4,8 @@ use crate::commands::{
     OpenedDocument,
 };
 use crate::core::{
-    DocumentVersion, DocumentVersionSummary, SqliteVersionStore, VersionInput, VersionStore,
+    DiffChange, DiffEngine, DocumentVersion, DocumentVersionSummary, ParagraphDiffEngine,
+    SqliteVersionStore, VersionInput, VersionStore,
 };
 use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -160,9 +161,14 @@ impl HistoryState {
         root_path: &str,
         detail: &ChangeSetDetail,
     ) -> Result<(String, String), CommandError> {
+        let base_relative_path = detail
+            .summary
+            .previous_relative_path
+            .as_deref()
+            .unwrap_or(&detail.summary.relative_path);
         let existing_base = self
             .store
-            .list_versions(root_path, &detail.summary.relative_path)
+            .list_versions(root_path, base_relative_path)
             .map_err(history_error)?
             .into_iter()
             .find(|version| {
@@ -171,7 +177,7 @@ impl HistoryState {
             });
         let base = if let Some(version) = existing_base {
             self.store
-                .get_version(root_path, &detail.summary.relative_path, &version.id)
+                .get_version(root_path, base_relative_path, &version.id)
                 .map_err(history_error)?
                 .ok_or_else(|| {
                     CommandError::new(
@@ -182,7 +188,7 @@ impl HistoryState {
         } else {
             self.record(
                 root_path,
-                &detail.summary.relative_path,
+                base_relative_path,
                 &detail.base_content,
                 &detail.summary.base_hash,
                 &detail.base_encoding,
@@ -205,7 +211,14 @@ impl HistoryState {
             &serde_json::json!({
                 "changeSetId": detail.summary.id,
                 "baseVersionId": base.id,
-                "status": "pending"
+                "status": detail.summary.status,
+                "changeType": detail.summary.change_type,
+                "previousRelativePath": detail.summary.previous_relative_path,
+                "baseRelativePath": base_relative_path,
+                "baseExists": detail.base_exists,
+                "candidateExists": detail.candidate_exists,
+                "supersededBy": detail.summary.superseded_by,
+                "supersededChangeSetIds": detail.summary.superseded_change_set_ids
             })
             .to_string(),
         )?;
@@ -220,6 +233,38 @@ impl HistoryState {
             .pending_change_sets(root_path)
             .map_err(history_error)
     }
+
+    pub(crate) fn mark_change_set_stale(
+        &self,
+        root_path: &str,
+        detail: &ChangeSetDetail,
+    ) -> Result<(), CommandError> {
+        self.capture_action(
+            root_path,
+            &detail.summary.relative_path,
+            &detail.candidate_content,
+            &detail.summary.candidate_hash,
+            &detail.candidate_encoding,
+            "external",
+            "external",
+            detail.summary.source.clone(),
+            &serde_json::json!({
+                "changeSetId": detail.summary.id,
+                "baseVersionId": detail.summary.base_version_id,
+                "status": "stale",
+                "changeType": detail.summary.change_type,
+                "previousRelativePath": detail.summary.previous_relative_path,
+                "baseRelativePath": detail.summary.previous_relative_path.as_deref()
+                    .unwrap_or(&detail.summary.relative_path),
+                "baseExists": detail.base_exists,
+                "candidateExists": detail.candidate_exists,
+                "supersededBy": detail.summary.superseded_by,
+                "supersededChangeSetIds": detail.summary.superseded_change_set_ids
+            })
+            .to_string(),
+        )?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -229,6 +274,14 @@ pub struct RestoreResult {
     content_hash: String,
     encoding: String,
     version: DocumentVersionSummary,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionComparison {
+    base: DocumentVersionSummary,
+    candidate: DocumentVersionSummary,
+    changes: Vec<DiffChange>,
 }
 
 impl From<DocumentVersion> for DocumentVersionSummary {
@@ -273,6 +326,52 @@ pub fn get_document_version(
         .store
         .get_version(&root_path, &relative_path, &version_id)
         .map_err(history_error)
+}
+
+#[tauri::command]
+pub fn compare_document_versions(
+    history: State<'_, HistoryState>,
+    root_path: String,
+    relative_path: String,
+    base_version_id: String,
+    candidate_version_id: String,
+) -> Result<VersionComparison, CommandError> {
+    compare_document_versions_sync(
+        &history,
+        &root_path,
+        &relative_path,
+        &base_version_id,
+        &candidate_version_id,
+    )
+}
+
+fn compare_document_versions_sync(
+    history: &HistoryState,
+    root_path: &str,
+    relative_path: &str,
+    base_version_id: &str,
+    candidate_version_id: &str,
+) -> Result<VersionComparison, CommandError> {
+    let load = |version_id: &str| {
+        history
+            .store
+            .get_version(root_path, relative_path, version_id)
+            .map_err(history_error)?
+            .ok_or_else(|| {
+                CommandError::new(
+                    "VERSION_UNAVAILABLE",
+                    "This historical version is no longer available.",
+                )
+            })
+    };
+    let base = load(base_version_id)?;
+    let candidate = load(candidate_version_id)?;
+    let changes = ParagraphDiffEngine.compare(&base.content, &candidate.content);
+    Ok(VersionComparison {
+        base: base.into(),
+        candidate: candidate.into(),
+        changes,
+    })
 }
 
 #[tauri::command]
@@ -421,6 +520,50 @@ mod tests {
     }
 
     #[test]
+    fn compares_two_versions_with_structured_markdown_changes() {
+        let history = state();
+        let base = history
+            .capture_action(
+                "/workspace",
+                "note.md",
+                "# Title\n\nOld paragraph.",
+                "hash-base",
+                "utf-8",
+                "editor",
+                "editor",
+                None,
+                "{}",
+            )
+            .expect("base");
+        let candidate = history
+            .capture_action(
+                "/workspace",
+                "note.md",
+                "# Better title\n\nNew paragraph.",
+                "hash-candidate",
+                "utf-8",
+                "editor",
+                "editor",
+                None,
+                "{}",
+            )
+            .expect("candidate");
+
+        let comparison = compare_document_versions_sync(
+            &history,
+            "/workspace",
+            "note.md",
+            &base.id,
+            &candidate.id,
+        )
+        .expect("compare");
+
+        assert_eq!(comparison.base.id, base.id);
+        assert_eq!(comparison.candidate.id, candidate.id);
+        assert_eq!(comparison.changes.len(), 2);
+    }
+
+    #[test]
     fn interrupted_restore_is_marked_failed_when_disk_keeps_before_version() {
         let directory = tempfile::tempdir().expect("temp directory");
         fs::write(directory.path().join("note.md"), "# Current").expect("write");
@@ -558,12 +701,15 @@ mod tests {
                 summary: crate::change_monitor::ChangeSetSummary {
                     id: change_set_id.to_string(),
                     relative_path: "note.md".to_string(),
+                    previous_relative_path: None,
                     change_type: "modified".to_string(),
                     base_version_id: "temporary-base".to_string(),
                     base_hash: content_hash(b"# Base"),
                     candidate_version_id: "temporary-candidate".to_string(),
                     candidate_hash: content_hash(b"# Candidate"),
                     status: "pending".to_string(),
+                    superseded_by: None,
+                    superseded_change_set_ids: Vec::new(),
                     source_type: "external".to_string(),
                     source: None,
                     agent: None,
@@ -575,6 +721,8 @@ mod tests {
                 candidate_content: "# Candidate".to_string(),
                 base_encoding: "utf-8".to_string(),
                 candidate_encoding: "utf-8".to_string(),
+                base_exists: true,
+                candidate_exists: true,
             };
             history
                 .persist_change_set(&root, &detail)
@@ -598,12 +746,15 @@ mod tests {
                     summary: crate::change_monitor::ChangeSetSummary {
                         id: newer_change_set_id.to_string(),
                         relative_path: "note.md".to_string(),
+                        previous_relative_path: None,
                         change_type: "modified".to_string(),
                         base_version_id: "temporary-base".to_string(),
                         base_hash: content_hash(b"# Base"),
                         candidate_version_id: "temporary-candidate".to_string(),
                         candidate_hash: content_hash(b"# Newer candidate"),
                         status: "pending".to_string(),
+                        superseded_by: None,
+                        superseded_change_set_ids: vec![change_set_id.to_string()],
                         source_type: "external".to_string(),
                         source: None,
                         agent: None,
@@ -615,6 +766,8 @@ mod tests {
                     candidate_content: "# Newer candidate".to_string(),
                     base_encoding: "utf-8".to_string(),
                     candidate_encoding: "utf-8".to_string(),
+                    base_exists: true,
+                    candidate_exists: true,
                 },
             )
             .expect("persist newer change set");
@@ -658,12 +811,15 @@ mod tests {
             summary: crate::change_monitor::ChangeSetSummary {
                 id: "cs-stuck".to_string(),
                 relative_path: "note.md".to_string(),
+                previous_relative_path: None,
                 change_type: "modified".to_string(),
                 base_version_id: "temporary-base".to_string(),
                 base_hash: content_hash(b"# Base"),
                 candidate_version_id: "temporary-candidate".to_string(),
                 candidate_hash: content_hash(b"# Candidate"),
                 status: "pending".to_string(),
+                superseded_by: None,
+                superseded_change_set_ids: Vec::new(),
                 source_type: "external".to_string(),
                 source: Some("Claude Code".to_string()),
                 agent: None,
@@ -675,6 +831,8 @@ mod tests {
             candidate_content: "# Candidate".to_string(),
             base_encoding: "utf-8".to_string(),
             candidate_encoding: "utf-8".to_string(),
+            base_exists: true,
+            candidate_exists: true,
         };
         history
             .persist_change_set(&root, &detail)

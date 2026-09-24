@@ -122,6 +122,13 @@ pub struct PendingRestore {
 pub struct PendingChangeSet {
     pub id: String,
     pub relative_path: String,
+    pub previous_relative_path: Option<String>,
+    pub change_type: String,
+    pub status: String,
+    pub superseded_by: Option<String>,
+    pub superseded_change_set_ids: Vec<String>,
+    pub base_exists: bool,
+    pub candidate_exists: bool,
     pub base_version_id: String,
     pub base_content: String,
     pub base_hash: String,

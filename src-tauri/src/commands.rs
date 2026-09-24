@@ -172,6 +172,58 @@ fn resolve_existing_markdown(
     Ok(path)
 }
 
+fn validated_relative_markdown(relative_path: &str) -> Result<&Path, CommandError> {
+    let relative = Path::new(relative_path);
+    if relative.as_os_str().is_empty()
+        || relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+        || !is_markdown(relative)
+    {
+        return Err(CommandError::new(
+            "INVALID_PATH",
+            "The requested Markdown path is not valid for this workspace.",
+        ));
+    }
+    Ok(relative)
+}
+
+fn resolve_markdown_target(root_path: &str, relative_path: &str) -> Result<PathBuf, CommandError> {
+    let relative = validated_relative_markdown(relative_path)?;
+    let root = canonical_workspace(root_path)?;
+    let target = root.join(relative);
+    let parent = target.parent().ok_or_else(|| {
+        CommandError::new("INVALID_PATH", "The Markdown file has no parent folder.")
+    })?;
+    let canonical_parent = fs::canonicalize(parent).map_err(|error| {
+        io_error(
+            "FILE_UNAVAILABLE",
+            "Unable to open the Markdown file parent folder",
+            error,
+        )
+    })?;
+    if !canonical_parent.starts_with(&root) {
+        return Err(CommandError::new(
+            "PATH_OUTSIDE_WORKSPACE",
+            "The requested file is outside the selected workspace.",
+        ));
+    }
+    if target
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(CommandError::new(
+            "UNSUPPORTED_FILE",
+            "Symbolic links cannot be changed by a review.",
+        ));
+    }
+    Ok(target)
+}
+
 pub(crate) fn content_hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -325,6 +377,109 @@ pub(crate) fn save_markdown_file_sync(
     Ok(SaveResult {
         content_hash: content_hash(&bytes),
     })
+}
+
+pub(crate) fn create_markdown_file_sync(
+    root_path: &str,
+    relative_path: &str,
+    content: &str,
+    encoding: &str,
+) -> Result<SaveResult, CommandError> {
+    let path = resolve_markdown_target(root_path, relative_path)?;
+    if path.exists() {
+        return Err(CommandError::new(
+            "FILE_CHANGED",
+            "The file path is no longer empty. Nothing was overwritten.",
+        ));
+    }
+    let bytes = encode_markdown(content, encoding)?;
+    let parent = path.parent().expect("validated parent");
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp_path = parent.join(format!(
+        ".amr-create-{}-{timestamp}.tmp",
+        std::process::id()
+    ));
+    fs::write(&temp_path, &bytes)
+        .map_err(|error| io_error("SAVE_FAILED", "Unable to write the temporary file", error))?;
+    if path.exists() {
+        let _ = fs::remove_file(&temp_path);
+        return Err(CommandError::new(
+            "FILE_CHANGED",
+            "The file path is no longer empty. Nothing was overwritten.",
+        ));
+    }
+    if let Err(error) = fs::rename(&temp_path, &path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(io_error(
+            "SAVE_FAILED",
+            "Unable to create the Markdown file",
+            error,
+        ));
+    }
+    Ok(SaveResult {
+        content_hash: content_hash(&bytes),
+    })
+}
+
+pub(crate) fn delete_markdown_file_sync(
+    root_path: &str,
+    relative_path: &str,
+    expected_hash: &str,
+) -> Result<(), CommandError> {
+    let path = resolve_existing_markdown(root_path, relative_path)?;
+    let current = fs::read(&path)
+        .map_err(|error| io_error("FILE_READ_FAILED", "Unable to verify Markdown file", error))?;
+    if content_hash(&current) != expected_hash {
+        return Err(CommandError::new(
+            "FILE_CHANGED",
+            "The file changed on disk. Nothing was deleted.",
+        ));
+    }
+    fs::remove_file(path)
+        .map_err(|error| io_error("DELETE_FAILED", "Unable to delete Markdown file", error))
+}
+
+pub(crate) fn ensure_markdown_absent_sync(
+    root_path: &str,
+    relative_path: &str,
+) -> Result<(), CommandError> {
+    let path = resolve_markdown_target(root_path, relative_path)?;
+    if path.exists() {
+        return Err(CommandError::new(
+            "FILE_CHANGED",
+            "The file was recreated on disk during review.",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn rename_markdown_file_sync(
+    root_path: &str,
+    from_relative_path: &str,
+    to_relative_path: &str,
+    expected_hash: &str,
+) -> Result<(), CommandError> {
+    let from = resolve_existing_markdown(root_path, from_relative_path)?;
+    let to = resolve_markdown_target(root_path, to_relative_path)?;
+    if to.exists() {
+        return Err(CommandError::new(
+            "FILE_CHANGED",
+            "The rename destination is no longer empty.",
+        ));
+    }
+    let current = fs::read(&from)
+        .map_err(|error| io_error("FILE_READ_FAILED", "Unable to verify Markdown file", error))?;
+    if content_hash(&current) != expected_hash {
+        return Err(CommandError::new(
+            "FILE_CHANGED",
+            "The file changed on disk. Nothing was renamed.",
+        ));
+    }
+    fs::rename(from, to)
+        .map_err(|error| io_error("RENAME_FAILED", "Unable to rename Markdown file", error))
 }
 
 pub(crate) fn encode_markdown(content: &str, encoding: &str) -> Result<Vec<u8>, CommandError> {
@@ -534,6 +689,44 @@ mod tests {
 
         assert_eq!(error.code, "FILE_CHANGED");
         assert_eq!(fs::read_to_string(path).expect("read file"), "# External");
+    }
+
+    #[test]
+    fn creates_deletes_and_renames_reviewed_markdown_safely() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let root = directory.path().to_str().expect("path");
+
+        let created =
+            create_markdown_file_sync(root, "created.md", "# Created", "utf-8").expect("create");
+        assert_eq!(
+            fs::read_to_string(directory.path().join("created.md")).expect("read"),
+            "# Created"
+        );
+
+        rename_markdown_file_sync(root, "created.md", "renamed.md", &created.content_hash)
+            .expect("rename");
+        assert!(!directory.path().join("created.md").exists());
+        assert!(directory.path().join("renamed.md").exists());
+
+        delete_markdown_file_sync(root, "renamed.md", &created.content_hash).expect("delete");
+        assert!(!directory.path().join("renamed.md").exists());
+    }
+
+    #[test]
+    fn refuses_to_delete_or_rename_a_changed_candidate() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let root = directory.path().to_str().expect("path");
+        fs::write(directory.path().join("note.md"), "# Candidate").expect("write");
+
+        let delete_error = delete_markdown_file_sync(root, "note.md", "stale")
+            .expect_err("stale delete must fail");
+        assert_eq!(delete_error.code, "FILE_CHANGED");
+
+        let rename_error = rename_markdown_file_sync(root, "note.md", "other.md", "stale")
+            .expect_err("stale rename must fail");
+        assert_eq!(rename_error.code, "FILE_CHANGED");
+        assert!(directory.path().join("note.md").exists());
+        assert!(!directory.path().join("other.md").exists());
     }
 
     #[test]

@@ -43,12 +43,7 @@ jobs:
         run: npm ci
 
       - name: Audit npm dependencies
-        # Legacy quick audit endpoint returned transient HTTP 400
-        # "Invalid package tree" during npm registry endpoint retirement
-        # (CI run #5, 2026-09-19, same package-lock as green runs #6/#7).
-        # Retry once so a flaky registry response does not fail the whole job;
-        # real high/critical findings still fail both attempts.
-        run: npm audit --audit-level=high || npm audit --audit-level=high
+        run: npm audit --audit-level=high
 
       - name: Check frontend types
         run: npm run typecheck
@@ -81,3 +76,60 @@ jobs:
 
       - name: Audit Rust dependencies
         run: cargo audit --file src-tauri/Cargo.lock
+
+  platform-check:
+    name: Platform check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-2025
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.12.0
+          cache: npm
+
+      - name: Set up Rust
+        shell: bash
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt
+          rustup default 1.98.1
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Check frontend types
+        run: npm run typecheck
+
+      - name: Test frontend
+        run: npm test
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Test Rust
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Check Rust
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml

@@ -1,0 +1,75 @@
+1
+00:00:01,247 --> 00:00:09,057
+Meet Margin Post: a local-first workspace for reviewing Markdown changed by coding agents, scripts, and other external tools.
+
+2
+00:00:09,338 --> 00:00:12,268
+It works without an account, and without a cloud dependency.
+
+3
+00:00:16,248 --> 00:00:19,562
+Margin Post does not claim to block writes before they happen.
+
+4
+00:00:19,710 --> 00:00:21,970
+External tools write to disk first.
+
+5
+00:00:22,413 --> 00:00:26,855
+Margin Post captures the real filesystem result as a durable Change Set.
+
+6
+00:00:27,099 --> 00:00:30,039
+Before any decision is applied, it checks the file again.
+
+7
+00:00:36,260 --> 00:00:40,369
+Open a local folder, and keep editing in a calm Markdown workspace.
+
+8
+00:00:40,779 --> 00:00:48,224
+Agent, script, and manual changes enter a persistent review inbox, without interrupting your work or requiring you to understand Git.
+
+9
+00:00:56,249 --> 00:01:03,531
+Review additions, deletions, and rewrites in document structure: including headings, paragraphs, lists, quotes, code, and tables.
+
+10
+00:01:04,025 --> 00:01:11,652
+Accept or reject each change; use keyboard shortcuts; undo the last decision; and stop safely if the file changes again during review.
+
+11
+00:01:21,256 --> 00:01:23,469
+File operations are explicit too.
+
+12
+00:01:23,637 --> 00:01:25,528
+Rejecting a new file removes it.
+
+13
+00:01:25,850 --> 00:01:28,847
+Rejecting a deletion restores its reviewed content.
+
+14
+00:01:29,150 --> 00:01:31,868
+Rejecting a rename returns the previous path.
+
+15
+00:01:32,076 --> 00:01:36,443
+Older candidates remain visible as superseded, instead of silently disappearing.
+
+16
+00:01:41,257 --> 00:01:44,418
+Every accepted result enters local version history.
+
+17
+00:01:44,687 --> 00:01:48,514
+Compare adjacent versions with the same structured Markdown engine.
+
+18
+00:01:48,925 --> 00:01:53,673
+When restoring an earlier version, the current disk state is preserved as a recovery point.
+
+19
+00:01:55,126 --> 00:01:59,196
+Margin Post keeps agent-edited Markdown reviewable, and recoverable.

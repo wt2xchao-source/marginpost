@@ -1,6 +1,7 @@
 use super::ports::{
     BlockType, DiffChange, DiffChangeType, DiffEngine, DiffSegment, DiffSegmentKind,
 };
+use markdown::{mdast::Node, to_mdast, ParseOptions};
 use similar::{ChangeTag, TextDiff};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,126 +236,35 @@ fn split_sentences(text: &str) -> Vec<String> {
 }
 
 fn parse_markdown_blocks(markdown: &str) -> Vec<MarkdownBlock> {
-    let lines = markdown.split_inclusive('\n').collect::<Vec<_>>();
-    let mut line_starts = Vec::with_capacity(lines.len());
-    let mut offset = 0;
-    for line in &lines {
-        line_starts.push(offset);
-        offset += line.len();
-    }
-    let mut blocks = Vec::new();
-    let mut index = 0;
+    let Ok(tree) = to_mdast(markdown, &ParseOptions::gfm()) else {
+        return (!markdown.trim().is_empty())
+            .then(|| MarkdownBlock {
+                block_type: BlockType::Unknown,
+                start: 0,
+                end: markdown.len(),
+                text: markdown.trim_end_matches(['\r', '\n']).to_string(),
+            })
+            .into_iter()
+            .collect();
+    };
 
-    while index < lines.len() {
-        if line_body(lines[index]).trim().is_empty() {
-            index += 1;
-            continue;
-        }
-
-        let trimmed = line_body(lines[index]).trim_start();
-        if let Some(fence) = fence_marker(trimmed) {
-            let start = index;
-            index += 1;
-            while index < lines.len() {
-                let current = line_body(lines[index]).trim_start();
-                index += 1;
-                if current.starts_with(fence) {
-                    break;
-                }
-            }
-            blocks.push(block(
-                BlockType::Code,
-                &lines[start..index],
-                line_starts[start],
-            ));
-            continue;
-        }
-
-        if is_heading(trimmed) {
-            blocks.push(block(
-                BlockType::Heading,
-                &lines[index..index + 1],
-                line_starts[index],
-            ));
-            index += 1;
-            continue;
-        }
-
-        if is_list_item(trimmed) {
-            let start = index;
-            index += 1;
-            while index < lines.len() {
-                let current = line_body(lines[index]);
-                if current.trim().is_empty() {
-                    break;
-                }
-                if is_list_item(current.trim_start())
-                    || current.starts_with(' ')
-                    || current.starts_with('\t')
-                {
-                    index += 1;
-                } else {
-                    break;
-                }
-            }
-            blocks.push(block(
-                BlockType::List,
-                &lines[start..index],
-                line_starts[start],
-            ));
-            continue;
-        }
-
-        if trimmed.starts_with('>') {
-            let start = index;
-            index += 1;
-            while index < lines.len() && line_body(lines[index]).trim_start().starts_with('>') {
-                index += 1;
-            }
-            blocks.push(block(
-                BlockType::Quote,
-                &lines[start..index],
-                line_starts[start],
-            ));
-            continue;
-        }
-
-        if is_table_start(&lines, index) {
-            let start = index;
-            index += 2;
-            while index < lines.len() && line_body(lines[index]).contains('|') {
-                index += 1;
-            }
-            blocks.push(block(
-                BlockType::Table,
-                &lines[start..index],
-                line_starts[start],
-            ));
-            continue;
-        }
-
-        let start = index;
-        index += 1;
-        while index < lines.len() {
-            let current = line_body(lines[index]);
-            let current_trimmed = current.trim_start();
-            if current.trim().is_empty()
-                || fence_marker(current_trimmed).is_some()
-                || is_heading(current_trimmed)
-                || is_list_item(current_trimmed)
-                || current_trimmed.starts_with('>')
-                || is_table_start(&lines, index)
-            {
-                break;
-            }
-            index += 1;
-        }
-        blocks.push(block(
-            BlockType::Paragraph,
-            &lines[start..index],
-            line_starts[start],
-        ));
-    }
+    let mut blocks = tree
+        .children()
+        .into_iter()
+        .flatten()
+        .filter_map(|node| {
+            let position = node.position()?;
+            let start = position.start.offset;
+            let end = position.end.offset;
+            let text = markdown.get(start..end)?.trim_end_matches(['\r', '\n']);
+            (!text.is_empty()).then(|| MarkdownBlock {
+                block_type: ast_block_type(node),
+                start,
+                end,
+                text: text.to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
     for index in 0..blocks.len() {
         blocks[index].end = blocks
             .get(index + 1)
@@ -364,75 +274,16 @@ fn parse_markdown_blocks(markdown: &str) -> Vec<MarkdownBlock> {
     blocks
 }
 
-fn block(block_type: BlockType, lines: &[&str], start: usize) -> MarkdownBlock {
-    let raw = lines.concat();
-    let text = raw.trim_end_matches('\n').to_string();
-    MarkdownBlock {
-        block_type,
-        start,
-        end: start + raw.len(),
-        text,
+fn ast_block_type(node: &Node) -> BlockType {
+    match node {
+        Node::Heading(_) => BlockType::Heading,
+        Node::Paragraph(_) => BlockType::Paragraph,
+        Node::List(_) => BlockType::List,
+        Node::Blockquote(_) => BlockType::Quote,
+        Node::Code(_) | Node::Math(_) => BlockType::Code,
+        Node::Table(_) => BlockType::Table,
+        _ => BlockType::Unknown,
     }
-}
-
-fn line_body(line: &str) -> &str {
-    let without_newline = line.strip_suffix('\n').unwrap_or(line);
-    without_newline
-        .strip_suffix('\r')
-        .unwrap_or(without_newline)
-}
-
-fn fence_marker(line: &str) -> Option<&'static str> {
-    if line.starts_with("```") {
-        Some("```")
-    } else if line.starts_with("~~~") {
-        Some("~~~")
-    } else {
-        None
-    }
-}
-
-fn is_heading(line: &str) -> bool {
-    let hashes = line
-        .chars()
-        .take_while(|character| *character == '#')
-        .count();
-    (1..=6).contains(&hashes) && line.chars().nth(hashes).is_some_and(char::is_whitespace)
-}
-
-fn is_list_item(line: &str) -> bool {
-    if ["- ", "* ", "+ "]
-        .iter()
-        .any(|marker| line.starts_with(marker))
-    {
-        return true;
-    }
-    let digits = line.chars().take_while(char::is_ascii_digit).count();
-    digits > 0
-        && line
-            .get(digits..)
-            .is_some_and(|rest| rest.starts_with(". ") || rest.starts_with(") "))
-}
-
-fn is_table_start(lines: &[&str], index: usize) -> bool {
-    let Some(next_line) = lines.get(index + 1) else {
-        return false;
-    };
-    line_body(lines[index]).contains('|') && is_table_delimiter(line_body(next_line))
-}
-
-fn is_table_delimiter(line: &str) -> bool {
-    let cells = line
-        .trim()
-        .trim_matches('|')
-        .split('|')
-        .map(str::trim)
-        .collect::<Vec<_>>();
-    !cells.is_empty()
-        && cells.iter().all(|cell| {
-            let content = cell.trim_matches(':');
-            content.len() >= 3 && content.chars().all(|character| character == '-')
-        })
 }
 
 #[cfg(test)]
@@ -509,6 +360,18 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![BlockType::Quote, BlockType::Code, BlockType::Table]
         );
+    }
+
+    #[test]
+    fn uses_gfm_ast_for_nested_lists_and_tables() {
+        let markdown =
+            "- parent\n  - child\n\n| Name | Value |\n| --- | --- |\n| nested | true |\n";
+        let blocks = parse_markdown_blocks(markdown);
+
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].block_type, BlockType::List);
+        assert_eq!(blocks[1].block_type, BlockType::Table);
+        assert!(blocks[0].text.contains("  - child"));
     }
 
     #[test]

@@ -2,10 +2,14 @@ import {
   ArrowLeft,
   Ban,
   Check,
+  ChevronDown,
   ChevronRight,
+  ChevronUp,
   Clock3,
   FileText,
+  FilePenLine,
   FolderOpen,
+  GitCompareArrows,
   Inbox,
   LoaderCircle,
   PanelLeftClose,
@@ -13,7 +17,10 @@ import {
   Plus,
   RotateCcw,
   Save,
+  Search,
+  Trash2,
   TriangleAlert,
+  Undo2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -37,6 +44,7 @@ import {
 } from "./services/notifications";
 import {
   chooseWorkspace,
+  compareDocumentVersions,
   discardChangeSet,
   getDocumentVersion,
   getChangeSetReview,
@@ -61,6 +69,7 @@ import {
   type OpenedDocument,
   type ReviewDecision,
   type StructuredChange,
+  type VersionComparison,
 } from "./services/workspace";
 
 type Section = "editor" | "changes" | "history";
@@ -139,6 +148,7 @@ function translatedError(error: unknown, t: Translate) {
   const normalized = normalizeWorkspaceError(error);
   const keys: Record<string, Parameters<Translate>[0]> = {
     CHANGE_SET_UNAVAILABLE: "reviewUnavailable",
+    CHANGE_SET_SUPERSEDED: "reviewSuperseded",
     INCOMPLETE_DECISIONS: "incompleteDecisions",
     REVIEW_CONFLICT: "reviewConflict",
     INVALID_DIFF_PLAN: "invalidDiffPlan",
@@ -187,8 +197,21 @@ export function App() {
   const [changeSets, setChangeSets] = useState<ChangeSetSummary[]>([]);
   const [selectedReview, setSelectedReview] = useState<ChangeSetReview | null>(null);
   const [decisions, setDecisions] = useState<Record<string, ReviewDecision>>({});
+  const [fileDecision, setFileDecision] = useState<ReviewDecision | null>(null);
+  const [decisionHistory, setDecisionHistory] = useState<
+    Array<{
+      decisions: Record<string, ReviewDecision>;
+      fileDecision: ReviewDecision | null;
+    }>
+  >([]);
+  const [activeChangeIndex, setActiveChangeIndex] = useState(0);
+  const [workspaceSearch, setWorkspaceSearch] = useState("");
+  const [changeSearch, setChangeSearch] = useState("");
+  const [changeFilter, setChangeFilter] = useState<"pending" | "all">("pending");
   const [versions, setVersions] = useState<DocumentVersionSummary[]>([]);
   const [selectedVersion, setSelectedVersion] = useState<DocumentVersion | null>(null);
+  const [versionComparison, setVersionComparison] =
+    useState<VersionComparison | null>(null);
   const [busy, setBusy] = useState<
     | "opening"
     | "reading"
@@ -209,10 +232,43 @@ export function App() {
   const dirty = openedDocument !== null && content !== savedContent;
   const openedRelativePath = openedDocument?.relativePath ?? null;
   const resolvedCount = Object.keys(decisions).length;
+  const pendingChangeSets = useMemo(
+    () => changeSets.filter((changeSet) => changeSet.status === "pending"),
+    [changeSets],
+  );
+  const visibleDocuments = useMemo(() => {
+    const query = workspaceSearch.trim().toLocaleLowerCase();
+    return query
+      ? documents.filter((document) =>
+          document.relativePath.toLocaleLowerCase().includes(query),
+        )
+      : documents;
+  }, [documents, workspaceSearch]);
+  const visibleChangeSets = useMemo(() => {
+    const query = changeSearch.trim().toLocaleLowerCase();
+    return changeSets.filter(
+      (changeSet) =>
+        (changeFilter === "all" || changeSet.status === "pending") &&
+        (!query ||
+          changeSet.relativePath.toLocaleLowerCase().includes(query) ||
+          changeSet.previousRelativePath
+            ?.toLocaleLowerCase()
+            .includes(query) ||
+          changeSet.source?.toLocaleLowerCase().includes(query)),
+    );
+  }, [changeFilter, changeSearch, changeSets]);
+  const requiresFileDecision =
+    selectedReview !== null && selectedReview.summary.changeType !== "modified";
   const reviewReady =
     selectedReview !== null &&
-    selectedReview.changes.length > 0 &&
-    resolvedCount === selectedReview.changes.length;
+    selectedReview.summary.status === "pending" &&
+    resolvedCount === selectedReview.changes.length &&
+    (!requiresFileDecision || fileDecision !== null);
+  const selectedVersionIndex = selectedVersion
+    ? versions.findIndex((version) => version.id === selectedVersion.id)
+    : -1;
+  const canCompareSelectedVersion =
+    selectedVersionIndex >= 0 && selectedVersionIndex < versions.length - 1;
 
   useEffect(() => {
     languageRef.current = language;
@@ -228,8 +284,8 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    void updateDockBadge(rootPath ? changeSets.length : 0);
-  }, [rootPath, changeSets]);
+    void updateDockBadge(rootPath ? pendingChangeSets.length : 0);
+  }, [rootPath, pendingChangeSets.length]);
 
   const focusChangesView = useCallback(() => {
     setActiveSection("changes");
@@ -323,6 +379,7 @@ export function App() {
         setSavedContent(opened.content);
         setVersions([]);
         setSelectedVersion(null);
+        setVersionComparison(null);
         setActiveSection("editor");
       } catch (caught) {
         setError(translatedError(caught, t));
@@ -372,8 +429,14 @@ export function App() {
       setChangeSets(existingChanges);
       setSelectedReview(null);
       setDecisions({});
+      setFileDecision(null);
+      setDecisionHistory([]);
+      setActiveChangeIndex(0);
+      setWorkspaceSearch("");
+      setChangeSearch("");
       setVersions([]);
       setSelectedVersion(null);
+      setVersionComparison(null);
       setActiveSection("editor");
       setMessage(
         openedByDrop
@@ -491,6 +554,9 @@ export function App() {
         }
         setSelectedReview(review);
         setDecisions({});
+        setFileDecision(null);
+        setDecisionHistory([]);
+        setActiveChangeIndex(0);
       } catch (caught) {
         setError(translatedError(caught, t));
       } finally {
@@ -500,18 +566,70 @@ export function App() {
     [busy, t],
   );
 
-  const decideChange = useCallback((changeId: string, decision: ReviewDecision) => {
-    setDecisions((current) => ({ ...current, [changeId]: decision }));
-  }, []);
+  const rememberDecisions = useCallback(() => {
+    setDecisionHistory((history) => [
+      ...history,
+      { decisions: { ...decisions }, fileDecision },
+    ]);
+  }, [decisions, fileDecision]);
+
+  const decideChange = useCallback(
+    (changeId: string, decision: ReviewDecision) => {
+      if (decisions[changeId] === decision) return;
+      rememberDecisions();
+      setDecisions((current) => ({ ...current, [changeId]: decision }));
+    },
+    [decisions, rememberDecisions],
+  );
+
+  const decideFile = useCallback(
+    (decision: ReviewDecision) => {
+      if (fileDecision === decision) return;
+      rememberDecisions();
+      setFileDecision(decision);
+    },
+    [fileDecision, rememberDecisions],
+  );
 
   const decideAll = useCallback(
     (decision: ReviewDecision) => {
       if (!selectedReview) return;
+      rememberDecisions();
       setDecisions(
         Object.fromEntries(
           selectedReview.changes.map((change) => [change.id, decision]),
         ),
       );
+      if (selectedReview.summary.changeType !== "modified") {
+        setFileDecision(decision);
+      }
+    },
+    [rememberDecisions, selectedReview],
+  );
+
+  const undoDecision = useCallback(() => {
+    setDecisionHistory((history) => {
+      const previous = history.at(-1);
+      if (!previous) return history;
+      setDecisions(previous.decisions);
+      setFileDecision(previous.fileDecision);
+      return history.slice(0, -1);
+    });
+  }, []);
+
+  const focusReviewChange = useCallback(
+    (index: number) => {
+      if (!selectedReview || selectedReview.changes.length === 0) return;
+      const next = Math.min(
+        Math.max(index, 0),
+        selectedReview.changes.length - 1,
+      );
+      setActiveChangeIndex(next);
+      window.requestAnimationFrame(() => {
+        document
+          .getElementById(`review-change-${next}`)
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
     },
     [selectedReview],
   );
@@ -527,12 +645,17 @@ export function App() {
       await discardChangeSet(selectedReview.summary.id);
       setSelectedReview(null);
       setDecisions({});
+      setFileDecision(null);
+      setDecisionHistory([]);
       if (rootPath) {
         setChangeSets(await listChangeSets());
       }
       setMessage(t("discardedNotice"));
     } catch (caught) {
       setError(translatedError(caught, t));
+      if (rootPath) {
+        setChangeSets(await listChangeSets().catch(() => changeSetsRef.current));
+      }
     } finally {
       setBusy(null);
     }
@@ -554,30 +677,55 @@ export function App() {
     setError(null);
     setMessage(null);
     try {
-      const result = await resolveChangeSet(
-        selectedReview.summary.id,
-        selectedReview.changes.map((change) => ({
+      const reviewDecisions = selectedReview.changes.map((change) => ({
           changeId: change.id,
           decision: decisions[change.id],
-        })),
-      );
+        }));
+      const result = fileDecision
+        ? await resolveChangeSet(
+            selectedReview.summary.id,
+            reviewDecisions,
+            fileDecision,
+          )
+        : await resolveChangeSet(selectedReview.summary.id, reviewDecisions);
       if (rootPath) {
         setChangeSets(await listChangeSets());
+        setDocuments(await listMarkdownFiles(rootPath));
       }
-      if (openedDocument?.relativePath === selectedReview.summary.relativePath) {
-        setOpenedDocument({
-          ...openedDocument,
-          content: result.content,
-          contentHash: result.contentHash,
-        });
-        setContent(result.content);
-        setSavedContent(result.content);
+      const reviewedPaths = [
+        selectedReview.summary.relativePath,
+        selectedReview.summary.previousRelativePath,
+      ];
+      if (
+        openedDocument &&
+        reviewedPaths.includes(openedDocument.relativePath)
+      ) {
+        if (result.exists === false) {
+          setOpenedDocument(null);
+          setContent("");
+          setSavedContent("");
+        } else {
+          setOpenedDocument({
+            ...openedDocument,
+            relativePath:
+              result.relativePath ?? selectedReview.summary.relativePath,
+            content: result.content,
+            contentHash: result.contentHash,
+          });
+          setContent(result.content);
+          setSavedContent(result.content);
+        }
       }
       setSelectedReview(null);
       setDecisions({});
+      setFileDecision(null);
+      setDecisionHistory([]);
       setMessage(t("reviewApplied"));
     } catch (caught) {
       setError(translatedError(caught, t));
+      if (rootPath) {
+        setChangeSets(await listChangeSets().catch(() => changeSetsRef.current));
+      }
     } finally {
       setBusy(null);
     }
@@ -585,6 +733,7 @@ export function App() {
     busy,
     decisions,
     dirty,
+    fileDecision,
     openedDocument,
     reviewReady,
     rootPath,
@@ -616,6 +765,7 @@ export function App() {
     if (!rootPath || !openedRelativePath) {
       setVersions([]);
       setSelectedVersion(null);
+      setVersionComparison(null);
       return;
     }
     setBusy("history");
@@ -628,6 +778,7 @@ export function App() {
       setVersions(items);
       if (items.length === 0) {
         setSelectedVersion(null);
+        setVersionComparison(null);
         return;
       }
       const detail = await getDocumentVersion(
@@ -636,6 +787,7 @@ export function App() {
         items[0].id,
       );
       setSelectedVersion(detail);
+      setVersionComparison(null);
     } catch (caught) {
       setError(translatedError(caught, t));
     } finally {
@@ -659,6 +811,7 @@ export function App() {
           return;
         }
         setSelectedVersion(detail);
+        setVersionComparison(null);
       } catch (caught) {
         setError(translatedError(caught, t));
       } finally {
@@ -667,6 +820,31 @@ export function App() {
     },
     [busy, openedDocument, rootPath, t],
   );
+
+  const compareSelectedVersion = useCallback(async () => {
+    if (!rootPath || !openedDocument || !selectedVersion || busy) return;
+    const selectedIndex = versions.findIndex(
+      (version) => version.id === selectedVersion.id,
+    );
+    const base = versions[selectedIndex + 1];
+    if (!base) return;
+    setBusy("history");
+    setError(null);
+    try {
+      setVersionComparison(
+        await compareDocumentVersions(
+          rootPath,
+          openedDocument.relativePath,
+          base.id,
+          selectedVersion.id,
+        ),
+      );
+    } catch (caught) {
+      setError(translatedError(caught, t));
+    } finally {
+      setBusy(null);
+    }
+  }, [busy, openedDocument, rootPath, selectedVersion, t, versions]);
 
   const restoreVersion = useCallback(async () => {
     if (!rootPath || !openedDocument || !selectedVersion || busy) return;
@@ -703,6 +881,7 @@ export function App() {
         result.version.id,
       );
       setSelectedVersion(detail);
+      setVersionComparison(null);
       setMessage(t("versionRestored"));
     } catch (caught) {
       setError(translatedError(caught, t));
@@ -729,6 +908,60 @@ export function App() {
   }, [saveDocument]);
 
   useEffect(() => {
+    if (!selectedReview || selectedReview.summary.status !== "pending") return;
+    const handleReviewShortcut = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        (target instanceof HTMLElement &&
+          target.matches("input, textarea, select")) ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      ) {
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        undoDecision();
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key.toLowerCase() === "j") {
+        event.preventDefault();
+        focusReviewChange(activeChangeIndex + 1);
+        return;
+      }
+      if (event.key === "ArrowUp" || event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        focusReviewChange(activeChangeIndex - 1);
+        return;
+      }
+      const decision =
+        event.key.toLowerCase() === "a"
+          ? "accepted"
+          : event.key.toLowerCase() === "r"
+            ? "rejected"
+            : null;
+      if (!decision) return;
+      const change = selectedReview.changes[activeChangeIndex];
+      if (change) {
+        event.preventDefault();
+        decideChange(change.id, decision);
+      } else if (requiresFileDecision) {
+        event.preventDefault();
+        decideFile(decision);
+      }
+    };
+    window.addEventListener("keydown", handleReviewShortcut);
+    return () => window.removeEventListener("keydown", handleReviewShortcut);
+  }, [
+    activeChangeIndex,
+    decideChange,
+    decideFile,
+    focusReviewChange,
+    requiresFileDecision,
+    selectedReview,
+    undoDecision,
+  ]);
+
+  useEffect(() => {
     if (!message) {
       return;
     }
@@ -747,11 +980,17 @@ export function App() {
       if (!active) {
         return;
       }
-      setChangeSets((current) =>
-        current.some((item) => item.id === changeSet.id)
-          ? current
-          : [changeSet, ...current],
-      );
+      setChangeSets((current) => {
+        const superseded = new Set(changeSet.supersededChangeSetIds ?? []);
+        const updated = current.map((item) =>
+          superseded.has(item.id)
+            ? { ...item, status: "superseded" as const, supersededBy: changeSet.id }
+            : item,
+        );
+        return updated.some((item) => item.id === changeSet.id)
+          ? updated
+          : [changeSet, ...updated];
+      });
       setMessage(
         translator(languageRef.current)("changedExternally", {
           path: changeSet.relativePath,
@@ -868,6 +1107,8 @@ export function App() {
                 if (id === "changes") {
                   setSelectedReview(null);
                   setDecisions({});
+                  setFileDecision(null);
+                  setDecisionHistory([]);
                 }
               }}
               title={t(id)}
@@ -875,7 +1116,7 @@ export function App() {
             >
               <Icon size={17} />
               <span>{t(id)}</span>
-              {id === "changes" ? <small>{changeSets.length}</small> : null}
+              {id === "changes" ? <small>{pendingChangeSets.length}</small> : null}
             </button>
           ))}
         </nav>
@@ -897,8 +1138,21 @@ export function App() {
             </button>
           </div>
 
+          {rootPath ? (
+            <label className="search-field sidebar-search">
+              <Search size={13} aria-hidden="true" />
+              <input
+                aria-label={t("searchWorkspace")}
+                onChange={(event) => setWorkspaceSearch(event.target.value)}
+                placeholder={t("searchFiles")}
+                type="search"
+                value={workspaceSearch}
+              />
+            </label>
+          ) : null}
+
           <div className="file-list">
-            {documents.map((document) => {
+            {visibleDocuments.map((document) => {
               const hasPendingChange = changeSets.some(
                 (changeSet) => changeSet.relativePath === document.relativePath,
               );
@@ -1023,6 +1277,7 @@ export function App() {
                   onClick={() => {
                     setSelectedReview(null);
                     setDecisions({});
+                    setFileDecision(null);
                   }}
                   title={t("backToChanges")}
                   type="button"
@@ -1048,36 +1303,152 @@ export function App() {
                     })}
                   </span>
                   <button
+                    aria-label={t("previousChange")}
+                    className="icon-button compact"
+                    disabled={activeChangeIndex === 0}
+                    onClick={() => focusReviewChange(activeChangeIndex - 1)}
+                    title={t("previousChange")}
+                    type="button"
+                  >
+                    <ChevronUp size={15} />
+                  </button>
+                  <button
+                    aria-label={t("nextChange")}
+                    className="icon-button compact"
+                    disabled={
+                      selectedReview.changes.length === 0 ||
+                      activeChangeIndex >= selectedReview.changes.length - 1
+                    }
+                    onClick={() => focusReviewChange(activeChangeIndex + 1)}
+                    title={t("nextChange")}
+                    type="button"
+                  >
+                    <ChevronDown size={15} />
+                  </button>
+                  <button
+                    aria-label={t("undoDecision")}
+                    className="icon-button compact"
+                    disabled={decisionHistory.length === 0}
+                    onClick={undoDecision}
+                    title={t("undoDecision")}
+                    type="button"
+                  >
+                    <Undo2 size={15} />
+                  </button>
+                  <button
+                    aria-label={t("acceptAll")}
                     className="secondary-button"
+                    disabled={selectedReview.summary.status !== "pending"}
                     onClick={() => decideAll("accepted")}
+                    title={t("acceptAll")}
                     type="button"
                   >
                     <Check size={14} />
-                    {t("acceptAll")}
+                    <span>{t("acceptAll")}</span>
                   </button>
                   <button
+                    aria-label={t("rejectAll")}
                     className="secondary-button"
+                    disabled={selectedReview.summary.status !== "pending"}
                     onClick={() => decideAll("rejected")}
+                    title={t("rejectAll")}
                     type="button"
                   >
                     <X size={14} />
-                    {t("rejectAll")}
+                    <span>{t("rejectAll")}</span>
                   </button>
                   <button
+                    aria-label={t("discard")}
                     className="secondary-button"
-                    disabled={busy !== null}
+                    disabled={
+                      busy !== null || selectedReview.summary.status !== "pending"
+                    }
                     onClick={() => void discardReview()}
+                    title={t("discard")}
                     type="button"
                   >
                     <Ban size={14} />
-                    {t("discard")}
+                    <span>{t("discard")}</span>
                   </button>
                 </div>
               </header>
-              {selectedReview.changes.length > 0 ? (
-                <div className="review-list">
-                  {selectedReview.changes.map((change) => (
-                    <article className="review-change" key={change.id}>
+              <div className="review-list">
+                {selectedReview.summary.status !== "pending" ? (
+                  <div className="review-empty">
+                    {selectedReview.summary.status === "stale"
+                      ? t("staleNotice")
+                      : t("supersededNotice")}
+                  </div>
+                ) : null}
+                {requiresFileDecision ? (
+                  <article className="review-change">
+                    <header>
+                      <strong>{t("fileOperation")}</strong>
+                    </header>
+                    <div className="diff-side">
+                      <FilePenLine size={15} aria-hidden="true" />
+                      <span>
+                        {selectedReview.summary.changeType === "created"
+                          ? t("createOperation", {
+                              path: selectedReview.summary.relativePath,
+                            })
+                          : selectedReview.summary.changeType === "deleted"
+                            ? t("deleteOperation", {
+                                path: selectedReview.summary.relativePath,
+                              })
+                            : t("renameOperation", {
+                                from:
+                                  selectedReview.summary.previousRelativePath ??
+                                  selectedReview.summary.relativePath,
+                                to: selectedReview.summary.relativePath,
+                              })}
+                      </span>
+                    </div>
+                    <div className="decision-control" role="group">
+                      <button
+                        aria-pressed={fileDecision === "accepted"}
+                        className={
+                          fileDecision === "accepted"
+                            ? "decision-button accept selected"
+                            : "decision-button accept"
+                        }
+                        disabled={selectedReview.summary.status !== "pending"}
+                        onClick={() => decideFile("accepted")}
+                        type="button"
+                      >
+                        <Check size={14} />
+                        {t("accept")}
+                      </button>
+                      <button
+                        aria-pressed={fileDecision === "rejected"}
+                        className={
+                          fileDecision === "rejected"
+                            ? "decision-button reject selected"
+                            : "decision-button reject"
+                        }
+                        disabled={selectedReview.summary.status !== "pending"}
+                        onClick={() => decideFile("rejected")}
+                        type="button"
+                      >
+                        <X size={14} />
+                        {t("reject")}
+                      </button>
+                    </div>
+                  </article>
+                ) : null}
+                {selectedReview.changes.length > 0 ? (
+                  <>
+                    {selectedReview.changes.map((change, index) => (
+                    <article
+                      className={
+                        activeChangeIndex === index
+                          ? "review-change active"
+                          : "review-change"
+                      }
+                      id={`review-change-${index}`}
+                      key={change.id}
+                      onClick={() => setActiveChangeIndex(index)}
+                    >
                       <header>
                         <strong>{changeLabel(change, t)}</strong>
                         <span>{t("changeNumber", { count: change.sequence + 1 })}</span>
@@ -1106,6 +1477,7 @@ export function App() {
                               ? "decision-button accept selected"
                               : "decision-button accept"
                           }
+                          disabled={selectedReview.summary.status !== "pending"}
                           onClick={() => decideChange(change.id, "accepted")}
                           type="button"
                         >
@@ -1119,6 +1491,7 @@ export function App() {
                               ? "decision-button reject selected"
                               : "decision-button reject"
                           }
+                          disabled={selectedReview.summary.status !== "pending"}
                           onClick={() => decideChange(change.id, "rejected")}
                           type="button"
                         >
@@ -1127,37 +1500,72 @@ export function App() {
                         </button>
                       </div>
                     </article>
-                  ))}
-                  <footer className="review-footer">
-                    <span>
-                      {t("decisionsProgress", {
-                        resolved: resolvedCount,
-                        total: selectedReview.changes.length,
-                      })}
-                    </span>
-                    <button
-                      className="apply-button"
-                      disabled={!reviewReady || busy !== null}
-                      onClick={() => void applyReview()}
-                      type="button"
-                    >
-                      <Check size={15} />
-                      {t("applyDecisions")}
-                    </button>
-                  </footer>
-                </div>
-              ) : (
-                <div className="review-empty">{t("noContentChanges")}</div>
-              )}
+                    ))}
+                  </>
+                ) : (
+                  <div className="review-empty">{t("noContentChanges")}</div>
+                )}
+                <footer className="review-footer">
+                  <span>
+                    {t("decisionsProgress", {
+                      resolved: resolvedCount,
+                      total: selectedReview.changes.length,
+                    })}
+                  </span>
+                  <button
+                    className="apply-button"
+                    disabled={!reviewReady || busy !== null}
+                    onClick={() => void applyReview()}
+                    type="button"
+                  >
+                    <Check size={15} />
+                    {t("applyDecisions")}
+                  </button>
+                </footer>
+              </div>
             </div>
           ) : changeSets.length > 0 ? (
             <div className="changes-view">
               <header className="view-heading">
                 <h1>{t("changes")}</h1>
-                <span>{t("pending", { count: changeSets.length })}</span>
+                <span>{t("pending", { count: pendingChangeSets.length })}</span>
               </header>
+              <div className="list-toolbar">
+                <label className="search-field">
+                  <Search size={14} aria-hidden="true" />
+                  <input
+                    aria-label={t("searchChangeSets")}
+                    onChange={(event) => setChangeSearch(event.target.value)}
+                    placeholder={t("searchChanges")}
+                    type="search"
+                    value={changeSearch}
+                  />
+                </label>
+                <div
+                  aria-label={t("changeSetFilter")}
+                  className="segmented-control"
+                  role="group"
+                >
+                  <button
+                    aria-pressed={changeFilter === "pending"}
+                    className={changeFilter === "pending" ? "active" : ""}
+                    onClick={() => setChangeFilter("pending")}
+                    type="button"
+                  >
+                    {t("pendingOnly")}
+                  </button>
+                  <button
+                    aria-pressed={changeFilter === "all"}
+                    className={changeFilter === "all" ? "active" : ""}
+                    onClick={() => setChangeFilter("all")}
+                    type="button"
+                  >
+                    {t("allChangeSets")}
+                  </button>
+                </div>
+              </div>
               <div className="change-list">
-                {changeSets.map((changeSet) => (
+                {visibleChangeSets.map((changeSet) => (
                   <button
                     aria-label={t("reviewFile", { path: changeSet.relativePath })}
                     className="change-row"
@@ -1168,6 +1576,10 @@ export function App() {
                     <div className="change-kind" aria-hidden="true">
                       {changeSet.changeType === "created" ? (
                         <Plus size={15} />
+                      ) : changeSet.changeType === "deleted" ? (
+                        <Trash2 size={15} />
+                      ) : changeSet.changeType === "renamed" ? (
+                        <FilePenLine size={15} />
                       ) : (
                         <FileText size={15} />
                       )}
@@ -1177,17 +1589,30 @@ export function App() {
                       <span>
                         {changeSet.changeType === "created"
                           ? t("newMarkdownFile")
-                          : t("externalModification")}
+                          : changeSet.changeType === "deleted"
+                            ? t("deletedMarkdownFile")
+                            : changeSet.changeType === "renamed"
+                              ? t("renamedMarkdownFile")
+                              : t("externalModification")}
                         {changeSet.source ? ` · ${changeSet.source}` : ""}
                       </span>
                     </div>
                     <div className="change-meta">
                       <span>{detectedTime(changeSet.detectedAt, language)}</span>
-                      <small>{t("pendingReview")}</small>
+                      <small>
+                        {changeSet.status === "pending"
+                          ? t("pendingReview")
+                          : changeSet.status === "stale"
+                            ? t("staleReview")
+                            : t("supersededReview")}
+                      </small>
                     </div>
                     <ChevronRight className="change-arrow" size={16} />
                   </button>
                 ))}
+                {visibleChangeSets.length === 0 ? (
+                  <div className="review-empty">{t("noMatchingChanges")}</div>
+                ) : null}
               </div>
             </div>
           ) : (
@@ -1233,6 +1658,7 @@ export function App() {
                         ? "version-row active"
                         : "version-row"
                     }
+                    disabled={busy !== null}
                     key={version.id}
                     onClick={() => void selectVersion(version)}
                     type="button"
@@ -1261,22 +1687,78 @@ export function App() {
                         <strong>{t(versionTypeKeys[selectedVersion.versionType])}</strong>
                         <span>{versionTime(selectedVersion.createdAt, language)}</span>
                       </div>
-                      <button
-                        className="secondary-button"
-                        disabled={
-                          busy !== null ||
-                          selectedVersion.contentHash === openedDocument.contentHash
-                        }
-                        onClick={() => void restoreVersion()}
-                        type="button"
-                      >
-                        <RotateCcw size={14} />
-                        {t("restoreVersion")}
-                      </button>
+                      <div className="version-actions">
+                        <button
+                          className="secondary-button"
+                          disabled={busy !== null || !canCompareSelectedVersion}
+                          onClick={() => void compareSelectedVersion()}
+                          type="button"
+                        >
+                          <GitCompareArrows size={14} />
+                          {t("comparePrevious")}
+                        </button>
+                        <button
+                          className="secondary-button"
+                          disabled={
+                            busy !== null ||
+                            selectedVersion.contentHash === openedDocument.contentHash
+                          }
+                          onClick={() => void restoreVersion()}
+                          type="button"
+                        >
+                          <RotateCcw size={14} />
+                          {t("restoreVersion")}
+                        </button>
+                      </div>
                     </header>
-                    <pre aria-label={t("versionPreview")}>
-                      {selectedVersion.content}
-                    </pre>
+                    {versionComparison ? (
+                      <div className="version-comparison">
+                        <div className="comparison-heading">
+                          <strong>{t("structuredComparison")}</strong>
+                          <span>
+                            {t("structuredChanges", {
+                              count: versionComparison.changes.length,
+                            })}
+                          </span>
+                        </div>
+                        {versionComparison.changes.length > 0 ? (
+                          versionComparison.changes.map((change) => (
+                            <article className="comparison-change" key={change.id}>
+                              <header>
+                                <strong>{changeLabel(change, t)}</strong>
+                                <span>
+                                  {t("changeNumber", {
+                                    count: change.sequence + 1,
+                                  })}
+                                </span>
+                              </header>
+                              {change.oldSegments.length > 0 ? (
+                                <div className="diff-side">
+                                  <span className="diff-sign old" aria-hidden="true">
+                                    -
+                                  </span>
+                                  <DiffText segments={change.oldSegments} side="old" />
+                                </div>
+                              ) : null}
+                              {change.newSegments.length > 0 ? (
+                                <div className="diff-side">
+                                  <span className="diff-sign new" aria-hidden="true">
+                                    +
+                                  </span>
+                                  <DiffText segments={change.newSegments} side="new" />
+                                </div>
+                              ) : null}
+                            </article>
+                          ))
+                        ) : (
+                          <p>{t("versionsIdentical")}</p>
+                        )}
+                      </div>
+                    ) : (
+                      <pre aria-label={t("versionPreview")}>
+                        {selectedVersion.content}
+                      </pre>
+                    )}
                   </>
                 ) : (
                   <p>{t("selectVersion")}</p>
