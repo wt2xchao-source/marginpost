@@ -122,7 +122,16 @@ V0.3.0 GitHub Release 提供使用 ad-hoc 签名的 Apple Silicon macOS `.dmg`�
 
 [从 GitHub Releases 下载 MarginPost V0.3.0](https://github.com/wt2xchao-source/marginpost/releases/tag/v0.3.0)。
 
-安装包仅适用于 Apple Silicon Mac，使用 ad-hoc 签名，没有使用 Apple Developer ID 签名，也没有经过公证。macOS 首次启动时可能拦截应用。请在 Finder 中按住 Control 点击应用，选择“打开”并确认警告。不要全局关闭 Gatekeeper。
+安装包仅适用于 Apple Silicon Mac，使用 ad-hoc 签名，没有使用 Apple Developer ID 签名，也没有经过公证，因此 macOS 会拦截首次启动。只需放行一次：
+
+1. 打开 `.dmg`，把 MarginPost 拖进“应用程序”。
+2. 双击 MarginPost。macOS 提示无法验证该应用时，点“完成”（或“取消”）关闭提示，不要选择移到废纸篓。
+3. 打开“系统设置 → 隐私与安全性”，向下滚动到“安全性”，在 MarginPost 的提示旁点“仍要打开”，再用密码或触控 ID 确认。
+4. MarginPost 即可打开，之后正常启动。
+
+macOS 14 Sonoma 及更早版本也可以在 Finder 中按住 Control 点击应用，选择“打开”并确认警告。
+
+不要全局关闭 Gatekeeper。
 
 ## 从源码运行
 

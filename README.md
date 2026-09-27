@@ -139,9 +139,21 @@ until the GitHub-hosted runs pass.
 [Download MarginPost V0.3.0 from GitHub Releases](https://github.com/wt2xchao-source/marginpost/releases/tag/v0.3.0).
 
 The package is for Apple Silicon Macs. It is ad-hoc signed, not signed with an
-Apple Developer ID, and not notarized. macOS may block the first launch. In
-Finder, Control-click the app, choose **Open**, and confirm the warning. Do not
-disable Gatekeeper globally.
+Apple Developer ID, and not notarized, so macOS blocks the first launch. You
+only need to allow it once:
+
+1. Open the `.dmg` and drag MarginPost into **Applications**.
+2. Double-click MarginPost. When macOS says it cannot verify the app, close the
+   warning with **Done** (or **Cancel**). Do not move it to the Trash.
+3. Open **System Settings → Privacy & Security**, scroll down to **Security**,
+   and click **Open Anyway** next to the MarginPost message. Confirm with your
+   password or Touch ID.
+4. MarginPost opens. Later launches work normally.
+
+On macOS 14 Sonoma and earlier, you can instead Control-click the app in
+Finder, choose **Open**, and confirm the warning.
+
+Do not disable Gatekeeper globally.
 
 ## Build From Source
 
